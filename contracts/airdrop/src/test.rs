@@ -6,7 +6,7 @@ use super::*;
 use soroban_sdk::{
     testutils::{storage::Instance as _, Address as _, Events, Ledger, MockAuth, MockAuthInvoke},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
+    Address, Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
 
 // ─── Test helpers ──────────────────────────────────────────────────────────
@@ -28,7 +28,7 @@ fn setup() -> (Env, Address, Address, Address) {
 }
 
 /// Mint `amount` tokens to `recipient` using the Stellar Asset Contract test utils.
-fn mint(env: &Env, token: &Address, admin: &Address, recipient: &Address, amount: i128) {
+fn mint(env: &Env, token: &Address, _admin: &Address, recipient: &Address, amount: i128) {
     StellarAssetClient::new(env, token).mint(recipient, &amount);
 }
 
@@ -88,7 +88,7 @@ fn expected_events(
 ) -> Vec<(Address, Vec<Val>, Val)> {
     let mut out = Vec::new(env);
     for (topics, data) in events.iter() {
-        out.push_back((contract_id.clone(), topics.clone().into_val(env), data.clone()));
+        out.push_back((contract_id.clone(), topics.clone().into_val(env), *data));
     }
     out
 }
@@ -104,10 +104,18 @@ fn test_initialize_and_query() {
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
 
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     assert_eq!(client.merkle_root(), Some(root.clone()));
-    assert_eq!(client.is_active(), true);
+    assert!(client.is_active());
     assert_eq!(client.total_deposited(), 1500);
     assert_eq!(client.token(), Some(token.clone()));
     assert_eq!(client.admin(), Some(admin.clone()));
@@ -124,7 +132,15 @@ fn test_claim_success() {
     let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
 
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     assert_eq!(TokenClient::new(&env, &token).balance(&claimant), 0);
 
@@ -143,7 +159,15 @@ fn test_double_claim_fails() {
     let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
 
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
     client.claim(&claimant, &1000, &proof);
 
     let result = client.try_claim(&claimant, &1000, &proof);
@@ -160,7 +184,15 @@ fn test_invalid_proof_fails() {
     let (root, _, proof1) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &other, 500);
 
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Submit proof for `other` but claim as `claimant`
     let result = client.try_claim(&claimant, &500, &proof1);
@@ -176,7 +208,15 @@ fn test_wrong_amount_fails() {
     let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
 
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Correct proof, wrong amount
     let result = client.try_claim(&claimant, &9999, &proof);
@@ -192,7 +232,15 @@ fn test_pause_and_unpause() {
     let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
 
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // ── Pause ────────────────────────────────────────────────────────────────
     client.set_active(&false);
@@ -205,32 +253,16 @@ fn test_pause_and_unpause() {
         expected_events(
             &env,
             &contract_id,
-            &[((symbol_short!("paused"), admin.clone()), false.into_val(&env))],
+            &[(
+                (symbol_short!("paused"), admin.clone()),
+                false.into_val(&env)
+            )],
         ),
         "set_active(false) must emit a 'paused' event with data=false"
     );
 
     let result = client.try_claim(&claimant, &1000, &proof);
     assert_eq!(result, Err(Ok(AirdropError::NotActive)));
-
-    // Verify the "paused" event was emitted for the pause call.
-    // Events are indexed as (contract_id, topics...) → data.
-    let events = env.events().all();
-    let pause_event = events.iter().find(|(_contract, topics, data)| {
-        let topics_val = topics.to_val();
-        let data_val = data.to_val();
-        // Topic tuple is (symbol_short!("paused"), admin); data is false.
-        // We check the event exists by inspecting the last event that matches.
-        let _ = (topics_val, data_val);
-        // Use a simpler approach: check publish topics via IntoVal
-        use soroban_sdk::IntoVal;
-        *topics == (symbol_short!("paused"), admin.clone()).into_val(&env)
-            && *data == false.into_val(&env)
-    });
-    assert!(
-        pause_event.is_some(),
-        "set_active(false) must emit a 'paused' event with data=false"
-    );
 
     // ── Unpause ──────────────────────────────────────────────────────────────
     client.set_active(&true);
@@ -239,25 +271,16 @@ fn test_pause_and_unpause() {
         expected_events(
             &env,
             &contract_id,
-            &[((symbol_short!("paused"), admin.clone()), true.into_val(&env))],
+            &[(
+                (symbol_short!("paused"), admin.clone()),
+                true.into_val(&env)
+            )],
         ),
         "set_active(true) must emit a 'paused' event with data=true"
     );
 
     client.claim(&claimant, &1000, &proof); // succeeds again
     assert!(client.is_claimed(&claimant));
-
-    // Verify the "paused" event was emitted for the unpause call.
-    let events = env.events().all();
-    let unpause_event = events.iter().find(|(_contract, topics, data)| {
-        use soroban_sdk::IntoVal;
-        *topics == (symbol_short!("paused"), admin.clone()).into_val(&env)
-            && *data == true.into_val(&env)
-    });
-    assert!(
-        unpause_event.is_some(),
-        "set_active(true) must emit a 'paused' event with data=true"
-    );
 }
 
 /// Issue #12: set_active on an uninitialised contract must NOT emit an event —
@@ -292,7 +315,15 @@ fn test_reclaim_unclaimed_tokens() {
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
 
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Advance ledger timestamp past expiration.
     env.ledger().set_timestamp(DEFAULT_EXPIRATION);
@@ -312,7 +343,15 @@ fn test_reclaim_before_expiration_fails() {
 
     mint(&env, &token, &admin, &admin, 1500);
     // Ledger timestamp is 0 by default; expiration is 1000.
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Attempt reclaim before expiration (timestamp 0 < expiration 1000).
     let result = client.try_reclaim();
@@ -333,10 +372,18 @@ fn test_claim_succeeds_after_expiration_before_reclaim() {
     let client = AirdropContractClient::new(&env, &contract_id);
     let claimant = Address::generate(&env);
 
-    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
 
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Advance ledger to exactly the expiration timestamp.
     env.ledger().set_timestamp(DEFAULT_EXPIRATION);
@@ -363,10 +410,18 @@ fn test_claim_panics_after_reclaim_empties_contract() {
     let client = AirdropContractClient::new(&env, &contract_id);
     let claimant = Address::generate(&env);
 
-    let (root, proof, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
 
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Admin reclaims all tokens after expiry.
     env.ledger().set_timestamp(DEFAULT_EXPIRATION);
@@ -389,9 +444,25 @@ fn test_double_initialize_fails() {
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
 
     mint(&env, &token, &admin, &admin, 3000);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
-    let result = client.try_initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    let result = client.try_initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
     assert_eq!(result, Err(Ok(AirdropError::AlreadyInitialized)));
 }
 
@@ -412,7 +483,8 @@ fn test_initialize_with_past_expiration_fails() {
     env.ledger().set_timestamp(1000);
     let past_expiration: u64 = 999;
 
-    let result = client.try_initialize(&admin, &token, &root, &1500, &past_expiration);
+    let result =
+        client.try_initialize(&admin, &token, &root, &1500, &past_expiration, &None, &None);
     assert_eq!(
         result,
         Err(Ok(AirdropError::ExpirationInPast)),
@@ -434,7 +506,15 @@ fn test_initialize_with_expiration_equal_to_current_timestamp_fails() {
     env.ledger().set_timestamp(500);
     let equal_expiration: u64 = 500;
 
-    let result = client.try_initialize(&admin, &token, &root, &1500, &equal_expiration);
+    let result = client.try_initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &equal_expiration,
+        &None,
+        &None,
+    );
     assert_eq!(
         result,
         Err(Ok(AirdropError::ExpirationInPast)),
@@ -457,7 +537,15 @@ fn test_initialize_with_expiration_one_second_in_future_succeeds() {
     let future_expiration: u64 = 101;
 
     // Must succeed without error.
-    client.initialize(&admin, &token, &root, &1500, &future_expiration, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &future_expiration,
+        &None,
+        &None,
+    );
     assert_eq!(client.expiration(), Some(future_expiration));
 }
 
@@ -470,7 +558,15 @@ fn test_zero_amount_claim_fails() {
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
 
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     let empty_proof: Vec<BytesN<32>> = Vec::new(&env);
     let result = client.try_claim(&claimant, &0, &empty_proof);
@@ -495,7 +591,15 @@ fn test_query_merkle_root_extends_ttl() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     let ttl_before = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
     // Simulate many ledgers passing without a claim — TTL would drop.
@@ -521,13 +625,21 @@ fn test_query_is_claimed_extends_ttl() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Shrinking the TTL also has to happen inside the contract's context.
     env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.is_claimed(&claimant);
 
-    let ttl_after = env.storage().instance().get_ttl();
+    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
     assert!(
         ttl_after > 1,
         "is_claimed() must refresh instance TTL; got {ttl_after}"
@@ -542,13 +654,21 @@ fn test_query_is_active_extends_ttl() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Shrinking the TTL also has to happen inside the contract's context.
     env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.is_active();
 
-    let ttl_after = env.storage().instance().get_ttl();
+    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
     assert!(
         ttl_after > 1,
         "is_active() must refresh instance TTL; got {ttl_after}"
@@ -563,13 +683,21 @@ fn test_query_token_extends_ttl() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Shrinking the TTL also has to happen inside the contract's context.
     env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.token();
 
-    let ttl_after = env.storage().instance().get_ttl();
+    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
     assert!(
         ttl_after > 1,
         "token() must refresh instance TTL; got {ttl_after}"
@@ -584,13 +712,21 @@ fn test_query_admin_extends_ttl() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Shrinking the TTL also has to happen inside the contract's context.
     env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.admin();
 
-    let ttl_after = env.storage().instance().get_ttl();
+    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
     assert!(
         ttl_after > 1,
         "admin() must refresh instance TTL; got {ttl_after}"
@@ -605,13 +741,21 @@ fn test_query_total_deposited_extends_ttl() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Shrinking the TTL also has to happen inside the contract's context.
     env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.total_deposited();
 
-    let ttl_after = env.storage().instance().get_ttl();
+    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
     assert!(
         ttl_after > 1,
         "total_deposited() must refresh instance TTL; got {ttl_after}"
@@ -626,13 +770,21 @@ fn test_query_expiration_extends_ttl() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Shrinking the TTL also has to happen inside the contract's context.
     env.as_contract(&contract_id, || env.storage().instance().extend_ttl(1, 1));
     client.expiration();
 
-    let ttl_after = env.storage().instance().get_ttl();
+    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
     assert!(
         ttl_after > 1,
         "expiration() must refresh instance TTL; got {ttl_after}"
@@ -650,7 +802,15 @@ fn test_negative_total_amount_fails() {
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
 
     // Do NOT mint — the rejection should happen before the transfer.
-    let result = client.try_initialize(&admin, &token, &root, &-1, &DEFAULT_EXPIRATION, &None, &None);
+    let result = client.try_initialize(
+        &admin,
+        &token,
+        &root,
+        &-1,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
     assert_eq!(result, Err(Ok(AirdropError::ZeroAmount)));
 }
 
@@ -668,7 +828,8 @@ fn test_zero_total_amount_fails() {
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
 
     // Do NOT mint — the rejection must happen before any token transfer.
-    let result = client.try_initialize(&admin, &token, &root, &0, &DEFAULT_EXPIRATION, &None, &None);
+    let result =
+        client.try_initialize(&admin, &token, &root, &0, &DEFAULT_EXPIRATION, &None, &None);
     assert_eq!(
         result,
         Err(Ok(AirdropError::ZeroAmount)),
@@ -685,7 +846,15 @@ fn test_negative_claim_amount_fails() {
     let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
 
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     let result = client.try_claim(&claimant, &-1, &proof);
     assert_eq!(result, Err(Ok(AirdropError::ZeroAmount)));
@@ -704,7 +873,15 @@ fn test_non_admin_set_active_fails() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Override mock_all_auths: only authorize non_admin, not the real admin.
     // The contract checks `admin.require_auth()` where admin is the stored address,
@@ -735,7 +912,15 @@ fn test_non_admin_reclaim_fails() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Advance past expiration so the time-gate is not the failure point.
     env.ledger().set_timestamp(DEFAULT_EXPIRATION);
@@ -787,7 +972,8 @@ fn test_leaf_hash_vectors() {
     // The JSON file is embedded at compile time so the test is self-contained
     // and runs without filesystem access from the Soroban test harness.
     let json_bytes = include_bytes!("../../../test-vectors/leaf-hash-vectors.json");
-    let json_str = core::str::from_utf8(json_bytes).expect("leaf-hash-vectors.json is not valid UTF-8");
+    let json_str =
+        core::str::from_utf8(json_bytes).expect("leaf-hash-vectors.json is not valid UTF-8");
 
     // Minimal JSON array parser — no external crate required.
     // Each element has the shape:
@@ -853,7 +1039,7 @@ fn extract_json_str<'a>(chunk: &'a str, key: &str) -> Option<&'a str> {
 
 /// Decode a lowercase hex string into bytes. Returns None on invalid input.
 fn hex_decode(hex: &str) -> Option<alloc::vec::Vec<u8>> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
     let mut out = alloc::vec::Vec::with_capacity(hex.len() / 2);
@@ -942,21 +1128,34 @@ fn test_transfer_admin_success() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     client.transfer_admin(&new_admin);
+    let transfer_events = contract_events(&env, &contract_id);
 
     // admin() must now return the new admin.
     assert_eq!(client.admin(), Some(new_admin.clone()));
 
-    // Verify event ("adm_xfer", old_admin) → new_admin was emitted.
-    let events = env.events().all();
-    let xfer_event = events.iter().find(|(_contract, topics, data)| {
-        use soroban_sdk::IntoVal;
-        *topics == (symbol_short!("adm_xfer"), admin.clone()).into_val(&env)
-            && *data == new_admin.clone().into_val(&env)
-    });
-    assert!(xfer_event.is_some(), "transfer_admin must emit ('adm_xfer', old_admin) → new_admin");
+    assert_eq!(
+        transfer_events,
+        expected_events(
+            &env,
+            &contract_id,
+            &[(
+                (symbol_short!("adm_xfer"), admin.clone()),
+                new_admin.clone().into_val(&env)
+            )],
+        ),
+        "transfer_admin must emit ('adm_xfer', old_admin) → new_admin"
+    );
 }
 
 /// Non-admin calling transfer_admin must panic (auth failure).
@@ -971,7 +1170,15 @@ fn test_non_admin_transfer_admin_fails() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Authorize non_admin instead of the real admin — must panic.
     env.set_auths(&[MockAuth {
@@ -982,7 +1189,8 @@ fn test_non_admin_transfer_admin_fails() {
             args: (new_admin.clone(),).into_val(&env),
             sub_invokes: &[],
         },
-    }.into()]);
+    }
+    .into()]);
 
     client.transfer_admin(&new_admin);
 }
@@ -997,7 +1205,15 @@ fn test_new_admin_can_set_active() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     client.transfer_admin(&new_admin);
 
@@ -1031,7 +1247,15 @@ fn test_restore_extends_ttl() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Simulate near-archival. The instance TTL is counted down by the ledger
     // sequence, so moving the ledger forward is what actually shortens it —
@@ -1073,7 +1297,15 @@ fn test_restore_requires_no_auth() {
     let claimant = Address::generate(&env);
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token_id, &admin, &admin, 1500);
-    client.initialize(&admin, &token_id, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token_id,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
     // Clear mock auths so subsequent calls must be auth-free.
     env.set_auths(&[]);
 
@@ -1137,11 +1369,21 @@ fn test_verify_proof_length_one_two_leaf_tree_returns_true() {
     let (root, proof0, proof1) = build_two_leaf_tree(&env, &contract_id, &addr0, 1000, &addr1, 500);
 
     assert!(
-        merkle::verify_proof(&env, &root, merkle::leaf_hash(&env, &contract_id, &addr0, 1000), &proof0),
+        merkle::verify_proof(
+            &env,
+            &root,
+            merkle::leaf_hash(&env, &contract_id, &addr0, 1000),
+            &proof0
+        ),
         "valid proof for leaf0 in a two-leaf tree must return true"
     );
     assert!(
-        merkle::verify_proof(&env, &root, merkle::leaf_hash(&env, &contract_id, &addr1, 500), &proof1),
+        merkle::verify_proof(
+            &env,
+            &root,
+            merkle::leaf_hash(&env, &contract_id, &addr1, 500),
+            &proof1
+        ),
         "valid proof for leaf1 in a two-leaf tree must return true"
     );
 }
@@ -1158,7 +1400,12 @@ fn test_verify_proof_one_element_too_long_returns_false() {
 
     // Sanity check: the original proof is valid.
     assert!(
-        merkle::verify_proof(&env, &root, merkle::leaf_hash(&env, &contract_id, &addr0, 1000), &proof0),
+        merkle::verify_proof(
+            &env,
+            &root,
+            merkle::leaf_hash(&env, &contract_id, &addr0, 1000),
+            &proof0
+        ),
         "sanity: correct proof must be valid"
     );
 
@@ -1167,7 +1414,12 @@ fn test_verify_proof_one_element_too_long_returns_false() {
     proof0.push_back(extra);
 
     assert!(
-        !merkle::verify_proof(&env, &root, merkle::leaf_hash(&env, &contract_id, &addr0, 1000), &proof0),
+        !merkle::verify_proof(
+            &env,
+            &root,
+            merkle::leaf_hash(&env, &contract_id, &addr0, 1000),
+            &proof0
+        ),
         "proof with one extra element must return false"
     );
 }
@@ -1230,8 +1482,24 @@ fn test_domain_separation_proof_invalid_across_contracts() {
     // Initialise both contracts with the SAME root so the cross-contract
     // attack surface is maximally exposed.
     mint(&env, &token, &admin, &admin, 3000);
-    client_a.initialize(&admin, &token, &root_a, &1500, &DEFAULT_EXPIRATION, &None, &None);
-    client_b.initialize(&admin, &token, &root_a, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client_a.initialize(
+        &admin,
+        &token,
+        &root_a,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+    client_b.initialize(
+        &admin,
+        &token,
+        &root_a,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // The proof generated for contract_a must work on contract_a.
     client_a.claim(&claimant, &1000, &proof_for_a);
@@ -1263,11 +1531,22 @@ fn test_is_claimed_refreshes_persistent_ttl() {
 
     let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Claim so the Claimed(claimant) persistent entry exists.
     client.claim(&claimant, &1000, &proof);
-    assert!(client.is_claimed(&claimant), "should be claimed right after claim()");
+    assert!(
+        client.is_claimed(&claimant),
+        "should be claimed right after claim()"
+    );
 
     // Simulate many ledger advances — enough that the persistent entry would
     // archive if extend_ttl were not called.  We do this by advancing the
@@ -1294,7 +1573,15 @@ fn test_is_claimed_false_for_unclaimed_after_ledger_advance() {
 
     let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
     client.claim(&claimant, &1000, &proof);
 
     env.ledger()
@@ -1332,11 +1619,26 @@ fn test_snapshot_merkle_root_5_entries() {
     let env = Env::default();
 
     // ── Fixed 5-entry airdrop list (same as TypeScript snapshot test) ──────
-    let addr1 = Address::from_str(&env, "GBTL47RTFR5EKMZSXWOQU735WBK7LRPPDIDK3JTNTCZZ7NUBBRDTVSK2");
-    let addr2 = Address::from_str(&env, "GBIRYNFBULFVEHPRNOZENOG6RZ4ZPTRDLR7HNMRKHV2QHISIDHOYV6ZN");
-    let addr3 = Address::from_str(&env, "GCEEXCCX6TVKCYJ4MFIE3M2NJPVPGRSRPIHDDXR43XKNTNBADWOQWDYC");
-    let addr4 = Address::from_str(&env, "GDA3XFJZJZQMKRFFZSMQLXDZZRK3DHJWDNUQ4IBOQP4O7FXJPLFJZR7");
-    let addr5 = Address::from_str(&env, "GCVJDBALC2RQFLD2HYGZDFEZVDFPLFB63KYGIBHC3QLJXBQHJIASOPNB");
+    let addr1 = Address::from_str(
+        &env,
+        "GBTL47RTFR5EKMZSXWOQU735WBK7LRPPDIDK3JTNTCZZ7NUBBRDTVSK2",
+    );
+    let addr2 = Address::from_str(
+        &env,
+        "GBIRYNFBULFVEHPRNOZENOG6RZ4ZPTRDLR7HNMRKHV2QHISIDHOYV6ZN",
+    );
+    let addr3 = Address::from_str(
+        &env,
+        "GCEEXCCX6TVKCYJ4MFIE3M2NJPVPGRSRPIHDDXR43XKNTNBADWOQWDYC",
+    );
+    let addr4 = Address::from_str(
+        &env,
+        "GDA3XFJZJZQMKRFFZSMQLXDZZRK3DHJWDNUQ4IBOQP4O7FXJPLFJZR7",
+    );
+    let addr5 = Address::from_str(
+        &env,
+        "GCVJDBALC2RQFLD2HYGZDFEZVDFPLFB63KYGIBHC3QLJXBQHJIASOPNB",
+    );
 
     // TODO: add a contract_id parameter here and update all leaf_hash calls
     // once the test vectors are regenerated with the new algorithm.
@@ -1347,21 +1649,26 @@ fn test_snapshot_merkle_root_5_entries() {
     let leaf5 = merkle::leaf_hash(&env, &addr5, &addr5, 5000);
 
     // ── Golden leaf hashes — pasted literally from TypeScript SDK output ───
-    let expected_leaf1 = BytesN::from_array(&env, &hex_to_array_32(
-        "f0ca9a176c3553e6f05548ac5dbc4e723432ff28aef31c1739f48e3d81c19c2c",
-    ));
-    let expected_leaf2 = BytesN::from_array(&env, &hex_to_array_32(
-        "e6991451a1a8a47f0d50e2a5054cf3bc9947122f15603de16496ed983676c639",
-    ));
-    let expected_leaf3 = BytesN::from_array(&env, &hex_to_array_32(
-        "31ffe1df9aa9d81dc94fb438a9d2223bd397680f32fa6e07b2f93389327e64a8",
-    ));
-    let expected_leaf4 = BytesN::from_array(&env, &hex_to_array_32(
-        "c51b26ad0b6ce87f5461d707bb10faed6e7fe74df3722e8e0cd45465b2a38fe0",
-    ));
-    let expected_leaf5 = BytesN::from_array(&env, &hex_to_array_32(
-        "af46c7705009f14e8a2387236bb5ad7260f419331c6ed2253653ebc26af5c286",
-    ));
+    let expected_leaf1 = BytesN::from_array(
+        &env,
+        &hex_to_array_32("f0ca9a176c3553e6f05548ac5dbc4e723432ff28aef31c1739f48e3d81c19c2c"),
+    );
+    let expected_leaf2 = BytesN::from_array(
+        &env,
+        &hex_to_array_32("e6991451a1a8a47f0d50e2a5054cf3bc9947122f15603de16496ed983676c639"),
+    );
+    let expected_leaf3 = BytesN::from_array(
+        &env,
+        &hex_to_array_32("31ffe1df9aa9d81dc94fb438a9d2223bd397680f32fa6e07b2f93389327e64a8"),
+    );
+    let expected_leaf4 = BytesN::from_array(
+        &env,
+        &hex_to_array_32("c51b26ad0b6ce87f5461d707bb10faed6e7fe74df3722e8e0cd45465b2a38fe0"),
+    );
+    let expected_leaf5 = BytesN::from_array(
+        &env,
+        &hex_to_array_32("af46c7705009f14e8a2387236bb5ad7260f419331c6ed2253653ebc26af5c286"),
+    );
 
     assert_eq!(leaf1, expected_leaf1, "leaf1 hash mismatch");
     assert_eq!(leaf2, expected_leaf2, "leaf2 hash mismatch");
@@ -1381,9 +1688,10 @@ fn test_snapshot_merkle_root_5_entries() {
     let root = merkle_pair(&env, l1_l2_l3_l4, leaf5);
 
     // Golden root — pasted literally, NOT computed.
-    let expected_root = BytesN::from_array(&env, &hex_to_array_32(
-        "9eb3a56c027bd438aec9dae40882e2c83c7aaa291bc4c162e87ee8f61a29624f",
-    ));
+    let expected_root = BytesN::from_array(
+        &env,
+        &hex_to_array_32("9eb3a56c027bd438aec9dae40882e2c83c7aaa291bc4c162e87ee8f61a29624f"),
+    );
 
     assert_eq!(
         root, expected_root,
@@ -1400,8 +1708,8 @@ fn hex_to_array_32(hex: &str) -> [u8; 32] {
     assert_eq!(hex.len(), 64, "expected 64 hex chars (32 bytes)");
     let mut out = [0u8; 32];
     for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-        let hi = hex_nibble(chunk[0]);
-        let lo = hex_nibble(chunk[1]);
+        let hi = hex_nibble(chunk[0]).expect("invalid hex digit");
+        let lo = hex_nibble(chunk[1]).expect("invalid hex digit");
         out[i] = (hi << 4) | lo;
     }
     out
@@ -1427,7 +1735,15 @@ fn test_reclaim_zero_balance_after_all_claimed() {
         build_two_leaf_tree(&env, &contract_id, &claimant0, 1000, &claimant1, 500);
 
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Both claimants claim their full allocation — the contract is now empty.
     client.claim(&claimant0, &1000, &proof0);
@@ -1440,9 +1756,13 @@ fn test_reclaim_zero_balance_after_all_claimed() {
     env.ledger().set_timestamp(DEFAULT_EXPIRATION);
 
     let reclaimed = client.reclaim();
+    let reclaim_events = contract_events(&env, &contract_id);
 
     // reclaim() must return 0 — the contract was already empty.
-    assert_eq!(reclaimed, 0, "reclaim() must return 0 when contract balance is 0");
+    assert_eq!(
+        reclaimed, 0,
+        "reclaim() must return 0 when contract balance is 0"
+    );
 
     // Admin balance must be unchanged — no transfer happened.
     let admin_balance_after = TokenClient::new(&env, &token).balance(&admin);
@@ -1453,7 +1773,7 @@ fn test_reclaim_zero_balance_after_all_claimed() {
 
     // The ("reclaimed", admin) event must still be emitted with data = (0, expiration).
     assert_eq!(
-        contract_events(&env, &contract_id),
+        reclaim_events,
         expected_events(
             &env,
             &contract_id,
@@ -1475,7 +1795,11 @@ fn build_n_leaf_tree(
     claimants: &[Address],
     amounts: &[i128],
 ) -> (BytesN<32>, alloc::vec::Vec<Vec<BytesN<32>>>) {
-    assert_eq!(claimants.len(), amounts.len(), "claimants/amounts length mismatch");
+    assert_eq!(
+        claimants.len(),
+        amounts.len(),
+        "claimants/amounts length mismatch"
+    );
     let n = claimants.len();
     assert!(n >= 1, "must have at least one entry");
 
@@ -1513,10 +1837,10 @@ fn build_n_leaf_tree(
     for leaf_idx in 0..n {
         let mut proof: Vec<BytesN<32>> = Vec::new(env);
         let mut idx = leaf_idx;
-        for layer in 0..layers.len().saturating_sub(1) {
+        for layer in layers.iter().take(layers.len().saturating_sub(1)) {
             let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
-            if sibling_idx < layers[layer].len() {
-                proof.push_back(layers[layer][sibling_idx].clone());
+            if sibling_idx < layer.len() {
+                proof.push_back(layer[sibling_idx].clone());
             }
             idx /= 2;
         }
@@ -1545,7 +1869,15 @@ fn test_invariant_balance_equals_deposited_minus_claimed() {
     let (root, proofs) = build_n_leaf_tree(&env, &contract_id, &claimants, &amounts);
 
     mint(&env, &token, &admin, &admin, total);
-    client.initialize(&admin, &token, &root, &total, &DEFAULT_EXPIRATION);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &total,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     let mut sum_claimed: i128 = 0;
 
@@ -1603,7 +1935,15 @@ fn test_invariant_over_claim_panics_when_balance_exhausted() {
 
     // Deposit only 1000 — enough for claimant_0 but not both.
     mint(&env, &token, &admin, &admin, 1000);
-    client.initialize(&admin, &token, &root, &1000, &DEFAULT_EXPIRATION);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1000,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Claimant 0 drains the contract entirely.
     client.claim(&claimant_0, &1000, &proof_0);
@@ -1626,7 +1966,15 @@ fn test_claim_for_success_tokens_go_to_claimant() {
 
     let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     let claimant_balance_before = TokenClient::new(&env, &token).balance(&claimant);
 
@@ -1652,7 +2000,15 @@ fn test_claim_for_double_claim_fails() {
 
     let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     client.claim_for(&claimant, &1000, &proof);
 
@@ -1672,9 +2028,18 @@ fn test_claim_for_invalid_proof_fails() {
     let claimant = Address::generate(&env);
     let other = Address::generate(&env);
 
-    let (root, _, proof_other) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &other, 500);
+    let (root, _, proof_other) =
+        build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &other, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Submit other's proof for claimant — must be rejected.
     let result = client.try_claim_for(&claimant, &500, &proof_other);
@@ -1694,7 +2059,15 @@ fn test_claim_then_claim_for_fails() {
 
     let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // First claim the normal way.
     client.claim(&claimant, &1000, &proof);
@@ -1749,7 +2122,15 @@ fn test_initialize_default_ttls_when_none() {
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
 
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     assert_eq!(client.claimed_ttl(), CLAIMED_TTL);
     assert_eq!(client.instance_ttl(), INSTANCE_TTL);
@@ -1801,7 +2182,15 @@ fn test_remaining_balance_equals_total_after_init() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     assert_eq!(client.remaining_balance(), 1500);
 }
@@ -1815,11 +2204,23 @@ fn test_remaining_balance_decreases_after_claim() {
 
     let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     assert_eq!(client.remaining_balance(), 1500, "balance before claim");
     client.claim(&claimant, &1000, &proof);
-    assert_eq!(client.remaining_balance(), 500, "balance after claim of 1000");
+    assert_eq!(
+        client.remaining_balance(),
+        500,
+        "balance after claim of 1000"
+    );
 }
 
 /// remaining_balance() is 0 after reclaim.
@@ -1831,7 +2232,15 @@ fn test_remaining_balance_zero_after_reclaim() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Advance past expiration and reclaim.
     env.ledger().set_timestamp(DEFAULT_EXPIRATION);
@@ -1987,15 +2396,30 @@ fn test_pre_init_all_queries() {
     let random_addr = Address::generate(&env);
 
     // Option-returning queries → None
-    assert_eq!(client.admin(), None,        "admin() must be None before init");
-    assert_eq!(client.token(), None,        "token() must be None before init");
-    assert_eq!(client.merkle_root(), None,  "merkle_root() must be None before init");
-    assert_eq!(client.expiration(), None,   "expiration() must be None before init");
+    assert_eq!(client.admin(), None, "admin() must be None before init");
+    assert_eq!(client.token(), None, "token() must be None before init");
+    assert_eq!(
+        client.merkle_root(),
+        None,
+        "merkle_root() must be None before init"
+    );
+    assert_eq!(
+        client.expiration(),
+        None,
+        "expiration() must be None before init"
+    );
 
     // Bool / numeric queries → safe defaults
-    assert!(!client.is_active(),            "is_active() must be false before init");
-    assert_eq!(client.total_deposited(), 0, "total_deposited() must be 0 before init");
-    assert!(!client.is_claimed(&random_addr), "is_claimed(addr) must be false before init");
+    assert!(!client.is_active(), "is_active() must be false before init");
+    assert_eq!(
+        client.total_deposited(),
+        0,
+        "total_deposited() must be 0 before init"
+    );
+    assert!(
+        !client.is_claimed(&random_addr),
+        "is_claimed(addr) must be false before init"
+    );
 }
 
 // ─── Issue #119: Multi-claimant test — 10-leaf tree ──────────────────────────
@@ -2020,9 +2444,8 @@ fn test_ten_claimant_tree_all_claims_succeed() {
 
     // Use a variety of amounts to ensure the tree is non-trivial.
     // The total must equal what we deposit into the contract.
-    let amounts: alloc::vec::Vec<i128> = alloc::vec![
-        100, 200, 300, 400, 500, 600, 700, 800, 900, 1_000,
-    ];
+    let amounts: alloc::vec::Vec<i128> =
+        alloc::vec![100, 200, 300, 400, 500, 600, 700, 800, 900, 1_000,];
     let total_deposited: i128 = amounts.iter().sum(); // 5 500
 
     // ── Build the 10-leaf Merkle tree ─────────────────────────────────────
@@ -2069,8 +2492,7 @@ fn test_ten_claimant_tree_all_claims_succeed() {
         // Verify the claimant received exactly their allocation.
         let balance = token_client.balance(&claimants[i]);
         assert_eq!(
-            balance,
-            amounts[i],
+            balance, amounts[i],
             "claimant {i}: expected balance {}, got {balance}",
             amounts[i]
         );
@@ -2082,8 +2504,7 @@ fn test_ten_claimant_tree_all_claims_succeed() {
         let contract_balance = token_client.balance(&contract_id);
         let expected_contract_balance = total_deposited - sum_claimed;
         assert_eq!(
-            contract_balance,
-            expected_contract_balance,
+            contract_balance, expected_contract_balance,
             "after claim {i}: contract balance ({contract_balance}) \
              must equal {total_deposited} - {sum_claimed} = {expected_contract_balance}"
         );
@@ -2102,8 +2523,7 @@ fn test_ten_claimant_tree_all_claims_succeed() {
         .map(|addr| token_client.balance(addr))
         .sum();
     assert_eq!(
-        total_received,
-        total_deposited,
+        total_received, total_deposited,
         "sum of all claimant balances ({total_received}) must equal \
          total_deposited ({total_deposited})"
     );
@@ -2118,15 +2538,22 @@ fn test_ten_claimant_tree_double_claim_rejected() {
     let client = AirdropContractClient::new(&env, &contract_id);
 
     let claimants: alloc::vec::Vec<Address> = (0..10).map(|_| Address::generate(&env)).collect();
-    let amounts: alloc::vec::Vec<i128> = alloc::vec![
-        100, 200, 300, 400, 500, 600, 700, 800, 900, 1_000,
-    ];
+    let amounts: alloc::vec::Vec<i128> =
+        alloc::vec![100, 200, 300, 400, 500, 600, 700, 800, 900, 1_000,];
     let total: i128 = amounts.iter().sum();
 
     let (root, proofs) = build_n_leaf_tree(&env, &contract_id, &claimants, &amounts);
 
     mint(&env, &token, &admin, &admin, total);
-    client.initialize(&admin, &token, &root, &total, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &total,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // Claim for the first address.
     client.claim(&claimants[0], &amounts[0], &proofs[0]);
@@ -2142,6 +2569,176 @@ fn test_ten_claimant_tree_double_claim_rejected() {
     // The remaining 9 claimants must still be able to claim.
     for i in 1..10_usize {
         client.claim(&claimants[i], &amounts[i], &proofs[i]);
-        assert!(client.is_claimed(&claimants[i]), "claimant {i} must be claimed");
+        assert!(
+            client.is_claimed(&claimants[i]),
+            "claimant {i} must be claimed"
+        );
     }
+}
+
+#[test]
+fn test_invariant_total_claimed_le_total_deposited() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+
+    let claimants: alloc::vec::Vec<Address> = (0..4).map(|_| Address::generate(&env)).collect();
+    let amounts: alloc::vec::Vec<i128> = alloc::vec![100, 250, 400, 750];
+    let total: i128 = amounts.iter().sum();
+
+    let (root, proofs) = build_n_leaf_tree(&env, &contract_id, &claimants, &amounts);
+
+    mint(&env, &token, &admin, &admin, total);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &total,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    assert_eq!(client.total_claimed(), 0);
+
+    for i in 0..claimants.len() {
+        client.claim(&claimants[i], &amounts[i], &proofs[i]);
+        assert!(
+            client.total_claimed() <= client.total_deposited(),
+            "after claim {i}: total_claimed must never exceed total_deposited"
+        );
+    }
+
+    assert_eq!(client.total_claimed(), total);
+    assert_eq!(client.total_claimed(), client.total_deposited());
+}
+
+#[test]
+fn test_invariant_batch_claim_total_claimed_le_total_deposited() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+
+    let claimants: alloc::vec::Vec<Address> = (0..4).map(|_| Address::generate(&env)).collect();
+    let amounts: alloc::vec::Vec<i128> = alloc::vec![100, 250, 400, 750];
+    let total: i128 = amounts.iter().sum();
+
+    let (root, proofs) = build_n_leaf_tree(&env, &contract_id, &claimants, &amounts);
+
+    mint(&env, &token, &admin, &admin, total);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &total,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    let mut entries = Vec::new(&env);
+    let mut batch_proofs = Vec::new(&env);
+    for i in 0..claimants.len() {
+        entries.push_back(AirdropEntry {
+            claimant: claimants[i].clone(),
+            amount: amounts[i],
+        });
+        batch_proofs.push_back(proofs[i].clone());
+    }
+
+    client.batch_claim(&entries, &batch_proofs);
+
+    assert!(
+        client.total_claimed() <= client.total_deposited(),
+        "batch_claim must not push total_claimed above total_deposited"
+    );
+    assert_eq!(client.total_claimed(), total);
+    assert_eq!(client.total_claimed(), client.total_deposited());
+}
+
+#[test]
+#[should_panic]
+fn test_upgrade_requires_admin() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let non_admin = Address::generate(&env);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    let new_wasm_hash = BytesN::from_array(&env, &[1u8; 32]);
+    env.set_auths(&[MockAuth {
+        address: &non_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "upgrade",
+            args: (new_wasm_hash.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }
+    .into()]);
+
+    client.upgrade(&new_wasm_hash);
+}
+
+#[test]
+fn test_upgrade_emits_event() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    let mut wasm = alloc::vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x00, 0x1e, 0x11,];
+    wasm.extend_from_slice(b"contractenvmetav0");
+    wasm.extend_from_slice(&[0u8; 12]);
+    let new_wasm_hash = env
+        .deployer()
+        .upload_contract_wasm(Bytes::from_slice(&env, &wasm));
+    client.upgrade(&new_wasm_hash);
+
+    assert_eq!(
+        contract_events(&env, &contract_id),
+        expected_events(
+            &env,
+            &contract_id,
+            &[(
+                (symbol_short!("upgrade"), admin.clone()),
+                new_wasm_hash.into_val(&env)
+            )],
+        ),
+        "upgrade() must emit ('upgrade', admin) with the new WASM hash"
+    );
+}
+
+#[test]
+fn test_upgrade_uninitialized_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AirdropContract, ());
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let new_wasm_hash = BytesN::from_array(&env, &[9u8; 32]);
+
+    assert_eq!(
+        client.try_upgrade(&new_wasm_hash),
+        Err(Ok(AirdropError::NotInitialized))
+    );
 }
