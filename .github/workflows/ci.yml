@@ -28,6 +28,11 @@ jobs:
         run: cargo clippy --manifest-path contracts/airdrop/Cargo.toml -- -D warnings
       - name: Run tests
         run: cargo test --manifest-path contracts/airdrop/Cargo.toml
+      # Coverage gate: fail the job if Rust test coverage drops below 80%.
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+      - name: Run coverage tests
+        run: cargo tarpaulin --manifest-path contracts/airdrop/Cargo.toml --fail-under 80
       - name: Build WASM
         run: cargo build --manifest-path contracts/airdrop/Cargo.toml --target wasm32v1-none --release
 
