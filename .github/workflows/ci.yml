@@ -28,6 +28,10 @@ jobs:
         run: cargo clippy --manifest-path contracts/airdrop/Cargo.toml -- -D warnings
       - name: Run tests
         run: cargo test --manifest-path contracts/airdrop/Cargo.toml
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit Rust dependencies
+        run: cargo audit --manifest-path contracts/airdrop/Cargo.toml
       - name: Build WASM
         run: cargo build --manifest-path contracts/airdrop/Cargo.toml --target wasm32v1-none --release
 
