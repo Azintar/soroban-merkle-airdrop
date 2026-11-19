@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   contract:
     name: Contract (Rust)
@@ -127,6 +131,12 @@ jobs:
         working-directory: cli
       - name: Test CLI
         run: pnpm test
+        working-directory: cli
+      - name: Test CLI
+        run: pnpm test
+        working-directory: cli
+      - name: Typecheck CLI
+        run: pnpm typecheck
         working-directory: cli
 
   web:
