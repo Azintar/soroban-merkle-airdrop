@@ -10,6 +10,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { createAirdropClient, NETWORKS } from "@soroban-merkle-airdrop/sdk";
 import { translateContractError } from "../errors.js";
+import { validateSecretKey } from "../validation.js";
 
 export const reclaimCommand = new Command("reclaim")
   .description("Reclaim unclaimed tokens from an expired airdrop (admin only)")
@@ -24,18 +25,16 @@ export const reclaimCommand = new Command("reclaim")
       console.error(chalk.red("Error: --contract-id or AIRDROP_CONTRACT_ID required"));
       process.exit(1);
     }
-    if (!secretKey) {
-      console.error(chalk.red("Error: --secret-key or STELLAR_SECRET_KEY required"));
-      process.exit(1);
-    }
 
     const spinner = ora("Connecting to contract...").start();
     try {
+      const validatedSecretKey = validateSecretKey(secretKey, "reclaim");
+
       const preset = NETWORKS[network];
       const client = createAirdropClient({ ...preset, contractId });
 
       spinner.text = "Submitting reclaim transaction...";
-      const { txHash, amount } = await client.reclaim(secretKey);
+      const { txHash, amount } = await client.reclaim(validatedSecretKey);
 
       spinner.succeed(chalk.green("Reclaim submitted!"));
       console.log(`\n  ${chalk.bold("Tx hash:")}         ${chalk.cyan(txHash)}`);
