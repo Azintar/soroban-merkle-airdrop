@@ -81,5 +81,18 @@ Navigate to the contract directory or run commands targeting the manifest path:
 * **Atomic Scope:** Keep your pull requests small and focused. Do not combine backend smart contract upgrades and unrelated web frontend UI adjustments into the same PR.
 * **Test Inclusion:** If you amend the core cryptographic tree algorithms or verify logic (`merkle.rs` or `merkle.ts`), you must expand the corresponding `test.rs` or `merkle.test.ts` files to prove your changes work.
 * **Automated CI Validation:** Every push or PR triggers a GitHub Actions pipeline (`ci.yml`) that compiles the Rust code and validates the node environments. Ensure these badges remain green.
+## 🔒 Branch Protection
+
+The `main` branch is protected to keep the codebase stable. Before opening a pull request, make sure the following conditions are met:
+
+- **Required CI checks:** The following checks must pass before a PR can be merged:
+  - `Contract (Rust)`
+  - `SDK + CLI (TypeScript)`
+  - `Web (Next.js)`
+- **PR review requirements:** At least **1 approving review** is required before a PR can be merged into `main`.
+- **No-force-push policy:** Force-pushes to `main` are **not permitted**. Only fast-forward merges are allowed.
+
+> **Tip:** Run `cargo test` and `pnpm test` locally before pushing, to catch failures early and avoid CI reruns.
+
 
 ---
