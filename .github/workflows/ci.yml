@@ -58,6 +58,12 @@ jobs:
       - name: Test CLI
         run: pnpm test
         working-directory: cli
+      - name: Test CLI
+        run: pnpm test
+        working-directory: cli
+      - name: Typecheck CLI
+        run: pnpm typecheck
+        working-directory: cli
 
   web:
     name: Web (Next.js)
