@@ -114,7 +114,7 @@ jobs:
         run: pnpm lint
         working-directory: sdk
       - name: Test SDK
-        run: pnpm test
+        run: pnpm test:coverage
         working-directory: sdk
       - name: Audit CLI dependencies
         # Fail the build on high or critical vulnerabilities in cli/.
