@@ -78,6 +78,9 @@ jobs:
   sdk:
     name: SDK + CLI (TypeScript)
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["20", "24"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
