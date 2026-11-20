@@ -237,6 +237,20 @@ export default function ClaimPage() {
     }
   }
 
+  // ─── Disconnect Wallet ──────────────────────────────────────────────────────
+
+  function handleDisconnectWallet() {
+    setWalletConnected(false);
+    setWalletAddress("");
+    setWalletError("");
+    // Reset claim state so the page returns to its initial, idle state.
+    setStatus("idle");
+    setMessage("");
+    setTreeData(null);
+    setFetchError("");
+    setIsFetching(false);
+  }
+
   // ─── Fetch tree from URL ────────────────────────────────────────────────────
 
   async function handleFetchTree() {
@@ -676,6 +690,23 @@ export default function ClaimPage() {
             }}
           >
             ✓ Wallet connected: {walletAddress}
+            <button
+              onClick={handleDisconnectWallet}
+              style={{
+                marginLeft: 12,
+                padding: "4px 10px",
+                background: "#ff6b6b",
+                color: "#fff",
+                fontWeight: 700,
+                fontSize: 12,
+                border: "none",
+                borderRadius: 6,
+                cursor: "pointer",
+              }}
+              aria-label="Disconnect wallet"
+            >
+              Disconnect
+            </button>
           </div>
         )}
 
