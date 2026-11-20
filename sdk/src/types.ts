@@ -51,3 +51,13 @@ export interface ClaimResult {
   address: string;
   amount: bigint;
 }
+
+/** Error thrown when the airdrop contract reverts with an error code. */
+export class AirdropContractError extends Error {
+  readonly code: number;
+  constructor(code: number, message?: string) {
+    super(message || `Contract execution error (code ${code})`);
+    this.name = "AirdropContractError";
+    this.code = code;
+  }
+}

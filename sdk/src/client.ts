@@ -116,6 +116,56 @@ export function createAirdropClient(config: NetworkConfig) {
     }
   }
 
+  /**
+   * Submit a reclaim transaction (admin reclaims unclaimed tokens back).
+   *
+   * @param signerSecretKey - The admin's Stellar secret key (S...).
+   */
+  async function reclaim(signerSecretKey: string): Promise<ClaimResult> {
+    const keypair = Keypair.fromSecret(signerSecretKey);
+    const sourceAccount = await server.getAccount(keypair.publicKey());
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(
+        contractInst.call("reclaim", new Address(keypair.publicKey()).toScVal())
+      )
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new Error(`Simulation failed: ${simResult.error}`);
+    }
+
+    const preparedTx = rpc.assembleTransaction(tx, simResult).build();
+    preparedTx.sign(keypair);
+
+    const sendResult = await server.sendTransaction(preparedTx);
+    if (sendResult.status === "ERROR") {
+      throw new Error(`Transaction failed: ${sendResult.errorResult?.toXDR("base64")}`);
+    }
+
+    const txHash = sendResult.hash;
+    while (true) {
+      await sleep(2000);
+      const poll = await server.getTransaction(txHash);
+      if (poll.status === "SUCCESS") {
+        return {
+          success: true,
+          txHash,
+          address: keypair.publicKey(),
+          amount: 0n,
+        };
+      }
+      if (poll.status === "FAILED") {
+        throw new Error(`Transaction failed on-chain: ${txHash}`);
+      }
+    }
+  }
+
   async function simulateRead(operation: xdr.Operation): Promise<xdr.ScVal> {
     const dummy = Keypair.random();
     const account = new Account(dummy.publicKey(), "0");
@@ -138,5 +188,5 @@ export function createAirdropClient(config: NetworkConfig) {
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  return { isClaimed, isActive, merkleRoot, totalDeposited, claim };
+  return { isClaimed, isActive, merkleRoot, totalDeposited, claim, reclaim };
 }
