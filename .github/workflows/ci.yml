@@ -44,8 +44,14 @@ jobs:
           pnpm build
         working-directory: sdk
       - name: Test SDK
-        run: pnpm test
+        run: pnpm test:coverage
         working-directory: sdk
+      - name: Upload SDK coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: sdk-coverage
+          path: sdk/coverage/
+          if-no-files-found: warn
       - name: Install & build CLI
         run: |
           pnpm install --no-frozen-lockfile
