@@ -99,3 +99,14 @@ describe("ClaimPage — Fetch Tree debounce", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("ClaimPage — network badge", () => {
+  it("renders the active network badge next to the heading", () => {
+    renderWithNetwork(<ClaimPage />);
+
+    const badge = screen.getByTestId("network-badge");
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveTextContent("testnet");
+    expect(badge).toHaveClass("network-badge--testnet");
+  });
+});
