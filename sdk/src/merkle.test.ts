@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { buildMerkleTree, verifyProof, leafHash } from "../src/merkle.js";
+import * as fc from "fast-check";
+import { buildMerkleTree, verifyProof, leafHash, hashPair } from "../src/merkle.js";
 
 const ADDR_1 = "GBTL47RTFR5EKMZSXWOQU735WBK7LRPPDIDK3JTNTCZZ7NUBBRDTVSK2";
 const ADDR_2 = "GBIRYNFBULFVEHPRNOZENOG6RZ4ZPTRDLR7HNMRKHV2QHISIDHOYV6ZN";
@@ -113,5 +114,46 @@ describe("buildMerkleTree", () => {
       const p = proofs.get(e.address)!;
       expect(verifyProof(root, e.address, e.amount, p.proof)).toBe(true);
     }
+  });
+});
+
+describe("hashPair", () => {
+  const BUF_A = Buffer.from("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "hex");
+  const BUF_B = Buffer.from("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "hex");
+  const BUF_C = leafHash(ADDR_1, 1000n);
+  const BUF_D = leafHash(ADDR_2, 500n);
+  const BUF_E = leafHash(ADDR_3, 300n);
+
+  it("hashPair(a, b) === hashPair(b, a) for fixed pairs", () => {
+    for (const [x, y] of [[BUF_A, BUF_B], [BUF_C, BUF_D], [BUF_D, BUF_E], [BUF_A, BUF_C]] as [Buffer, Buffer][]) {
+      expect(hashPair(x, y).toString("hex")).toBe(hashPair(y, x).toString("hex"));
+    }
+  });
+
+  it("hashPair(a, a) !== hashPair(a, b) when a !== b", () => {
+    for (const [x, y] of [[BUF_A, BUF_B], [BUF_C, BUF_D], [BUF_D, BUF_E]] as [Buffer, Buffer][]) {
+      expect(hashPair(x, x).toString("hex")).not.toBe(hashPair(x, y).toString("hex"));
+    }
+  });
+
+  it("output is always 32 bytes", () => {
+    for (const [x, y] of [[BUF_A, BUF_B], [BUF_C, BUF_D], [BUF_A, BUF_A]] as [Buffer, Buffer][]) {
+      expect(hashPair(x, y).length).toBe(32);
+    }
+  });
+
+  it("property: hashPair(a, b) === hashPair(b, a) for random Buffer pairs", () => {
+    fc.assert(
+      fc.property(
+        fc.uint8Array({ minLength: 32, maxLength: 32 }),
+        fc.uint8Array({ minLength: 32, maxLength: 32 }),
+        (a, b) => {
+          const bufA = Buffer.from(a);
+          const bufB = Buffer.from(b);
+          return hashPair(bufA, bufB).toString("hex") === hashPair(bufB, bufA).toString("hex");
+        }
+      ),
+      { numRuns: 500 }
+    );
   });
 });
