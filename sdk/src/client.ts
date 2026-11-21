@@ -159,6 +159,30 @@ export function createAirdropClient(config: NetworkConfig) {
   }
 
   /**
+   * Fetch the total tokens claimed so far from the airdrop contract.
+   *
+   * @returns Total claimed amount in base units, or `null` if the contract
+   *   has not been initialised or does not expose this value.
+   *
+   * @example
+   * ```ts
+   * const claimed = await client.totalClaimed();
+   * console.log("Total claimed:", claimed?.toString());
+   * ```
+   */
+  async function totalClaimed(): Promise<bigint | null> {
+    try {
+      const result = await simulateRead(contractInst.call("total_claimed"));
+      const native = scValToNative(result);
+      if (native === null || native === undefined) return null;
+      return BigInt(native as number);
+    } catch {
+      // Contract may not expose total_claimed; treat as best-effort.
+      return null;
+    }
+  }
+
+  /**
    * Fetch the expiration timestamp (Unix seconds) after which unclaimed tokens
    * can be reclaimed by the admin.
    *

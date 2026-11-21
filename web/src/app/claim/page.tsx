@@ -666,6 +666,57 @@ export default function ClaimPage() {
         </div>
       )}
 
+      {/* ── Progress bar (totalDeposited / totalClaimed) ── */}
+      {totalDeposited !== null && totalDeposited > 0n && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="progress-bar-section"
+          style={{
+            marginBottom: 20,
+            padding: "14px 18px",
+            borderRadius: 8,
+            background: "#111",
+            border: "1px solid #333",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#aaa", marginBottom: 6 }}>
+            <span>Airdrop Progress</span>
+            <span>
+              {totalClaimed !== null
+                ? `${totalClaimed.toString()} / ${totalDeposited.toString()} claimed`
+                : `${totalDeposited.toString()} total`}
+            </span>
+          </div>
+          <div
+            role="progressbar"
+            aria-label="Airdrop claim progress"
+            aria-valuenow={totalClaimed !== null ? Number(totalClaimed) : 0}
+            aria-valuemin={0}
+            aria-valuemax={Number(totalDeposited)}
+            style={{
+              height: 8,
+              borderRadius: 4,
+              background: "#333",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                height: "100%",
+                borderRadius: 4,
+                background: "#4caf50",
+                width:
+                  totalClaimed !== null && totalDeposited > 0n
+                    ? `${Math.min(100, Number((totalClaimed * 100n) / totalDeposited))}%`
+                    : "0%",
+                transition: "width 0.4s ease",
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* ── #78: Full-page loading overlay while expiration is being fetched ── */}
       {expirationLoading && (
         <div
