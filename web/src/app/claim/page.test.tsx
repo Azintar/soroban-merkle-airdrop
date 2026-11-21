@@ -25,6 +25,7 @@ const {
   mockIsConnected,
   mockGetPublicKey,
   mockSignTransaction,
+  mockExpirationFn,
 } = vi.hoisted(() => ({
   mockIsClaimedFn: vi.fn<() => Promise<boolean>>(),
   mockBuildClaimTransactionFn: vi.fn<() => Promise<string>>(),
@@ -35,6 +36,7 @@ const {
   mockIsConnected: vi.fn<() => Promise<boolean>>(),
   mockGetPublicKey: vi.fn<() => Promise<string>>(),
   mockSignTransaction: vi.fn<() => Promise<string>>(),
+  mockExpirationFn: vi.fn<() => Promise<bigint | null>>().mockResolvedValue(null),
 }));
 
 // ─── SDK mock ─────────────────────────────────────────────────────────────────
@@ -43,6 +45,7 @@ vi.mock("@soroban-merkle-airdrop/sdk", () => ({
     isClaimed: mockIsClaimedFn,
     buildClaimTransaction: mockBuildClaimTransactionFn,
     submitSignedTransaction: mockSubmitSignedTransactionFn,
+    expiration: mockExpirationFn,
   })),
   verifyProof: mockVerifyProof,
   NETWORKS: {
@@ -327,5 +330,127 @@ describe("ClaimPage — check error flow", () => {
     await waitFor(() =>
       expect(screen.getByTestId("status-message")).toHaveTextContent(/rpc unavailable/i)
     );
+  });
+});
+
+// ─── Helpers for clipboard tests ─────────────────────────────────────────────
+
+async function reachSuccessState() {
+  await connectWallet();
+  await pasteTree();
+  await userEvent.click(screen.getByRole("button", { name: /check eligibility/i }));
+  await waitFor(() => screen.getByRole("button", { name: /claim tokens/i }));
+  await userEvent.click(screen.getByRole("button", { name: /claim tokens/i }));
+  await waitFor(() =>
+    expect(screen.getByTestId("status-message")).toHaveTextContent(/successfully claimed/i)
+  );
+}
+
+describe("ClaimPage — handleCopyLink clipboard fallback (#531)", () => {
+  const SIGNED_XDR = "signed-xdr";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIsConnected.mockResolvedValue(true);
+    mockGetPublicKey.mockResolvedValue(ELIGIBLE_ADDRESS);
+    mockIsClaimedFn.mockResolvedValue(false);
+    mockVerifyProof.mockReturnValue(true);
+    mockBuildClaimTransactionFn.mockResolvedValue("unsigned-xdr");
+    mockSignTransaction.mockResolvedValue(SIGNED_XDR);
+    mockSubmitSignedTransactionFn.mockResolvedValue({
+      txHash: "abc123txhash",
+      amount: 1000n,
+    });
+  });
+
+  it("copies via navigator.clipboard when available", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    });
+
+    renderWithNetwork(<ClaimPage />);
+    await reachSuccessState();
+
+    const copyBtn = screen.getByTestId("copy-link-btn");
+    await userEvent.click(copyBtn);
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(
+        expect.stringContaining("web+stellar:tx?xdr=")
+      );
+    });
+    // Button text changes to "Copied!"
+    expect(copyBtn).toHaveTextContent(/copied/i);
+  });
+
+  it("falls back to execCommand when navigator.clipboard is unavailable", async () => {
+    // Remove clipboard API
+    Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      configurable: true,
+      writable: true,
+    });
+
+    // jsdom doesn't implement execCommand — stub it before spying
+    if (!document.execCommand) {
+      Object.defineProperty(document, "execCommand", {
+        value: vi.fn(),
+        configurable: true,
+        writable: true,
+      });
+    }
+    const execCommand = vi.spyOn(document, "execCommand").mockReturnValue(true);
+
+    renderWithNetwork(<ClaimPage />);
+    await reachSuccessState();
+
+    await userEvent.click(screen.getByTestId("copy-link-btn"));
+
+    await waitFor(() => {
+      expect(execCommand).toHaveBeenCalledWith("copy");
+    });
+    expect(screen.getByTestId("copy-link-btn")).toHaveTextContent(/copied/i);
+
+    execCommand.mockRestore();
+  });
+
+  it("shows manual fallback when both methods fail", async () => {
+    // navigator.clipboard rejects
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockRejectedValue(new Error("not allowed")) },
+      configurable: true,
+      writable: true,
+    });
+    // jsdom doesn't implement execCommand — stub it before spying
+    if (!document.execCommand) {
+      Object.defineProperty(document, "execCommand", {
+        value: vi.fn(),
+        configurable: true,
+        writable: true,
+      });
+    }
+    // execCommand returns false (failure)
+    const execCommand = vi.spyOn(document, "execCommand").mockReturnValue(false);
+
+    renderWithNetwork(<ClaimPage />);
+    await reachSuccessState();
+
+    await userEvent.click(screen.getByTestId("copy-link-btn"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("copy-manual-fallback")).toBeInTheDocument();
+    });
+
+    const uri = screen.getByTestId("copy-manual-uri");
+    expect(uri).toHaveTextContent("web+stellar:tx?xdr=");
+    // The displayed message text
+    expect(screen.getByTestId("copy-manual-fallback")).toHaveTextContent(
+      /could not copy automatically/i
+    );
+
+    execCommand.mockRestore();
   });
 });

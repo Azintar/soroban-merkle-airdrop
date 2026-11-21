@@ -23,6 +23,11 @@
  *   - Pure-CSS spinner shown during status === 'checking' or 'claiming'
  *   - Inputs disabled during loading states
  *   - Spinner has aria-label and role="status" for accessibility
+ *
+ * #531: Clipboard fallback for handleCopyLink
+ *   - Tries navigator.clipboard.writeText first (requires HTTPS / secure context)
+ *   - Falls back to document.execCommand('copy') via a hidden textarea
+ *   - If both methods fail, shows the URI in a <code> block for manual copy
  */
 "use client";
 
@@ -96,6 +101,15 @@ export default function ClaimPage() {
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("");
   const [txHash, setTxHash] = useState("");
+
+  // ── #531: Copy-link state ────────────────────────────────────────────────
+  /**
+   * The SEP-7 tx URI for the last successful claim.
+   * Built as:  web+stellar:tx?xdr=<base64-encoded-signed-XDR>
+   */
+  const [sep7Uri, setSep7Uri] = useState("");
+  /** "idle" | "copied" | "fallback-copied" | "manual" */
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "fallback-copied" | "manual">("idle");
 
   // ── #77: Expiration state ────────────────────────────────────────────────
   /** Unix timestamp (seconds) when the airdrop expires, or null if unknown. */
@@ -312,12 +326,57 @@ export default function ClaimPage() {
       });
       const result = await client.submitSignedTransaction(signedXdr, proof);
       setTxHash(result.txHash);
+      // Build a SEP-7 tx URI so users can share or rebroadcast the signed tx
+      setSep7Uri(`web+stellar:tx?xdr=${encodeURIComponent(signedXdr)}`);
+      setCopyState("idle");
       setStatus("success");
       setMessage(`Successfully claimed ${result.amount.toString()} tokens!`);
     } catch (err) {
       setStatus("error");
       setMessage((err as Error).message);
     }
+  }
+
+  // ─── Copy claim link (#531) ─────────────────────────────────────────────────
+
+  async function handleCopyLink() {
+    if (!sep7Uri) return;
+    setCopyState("idle");
+
+    // 1. Clipboard API — only available in secure contexts (HTTPS)
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(sep7Uri);
+        setCopyState("copied");
+        setTimeout(() => setCopyState("idle"), 2500);
+        return;
+      } catch {
+        // Fall through to execCommand fallback
+      }
+    }
+
+    // 2. execCommand('copy') fallback — works on HTTP and older browsers
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = sep7Uri;
+      ta.setAttribute("aria-hidden", "true");
+      ta.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      if (ok) {
+        setCopyState("fallback-copied");
+        setTimeout(() => setCopyState("idle"), 2500);
+        return;
+      }
+    } catch {
+      // Fall through to manual display
+    }
+
+    // 3. Both methods failed — show the URI for manual copying
+    setCopyState("manual");
   }
 
   const statusBorderColor: Record<Status, string> = {
@@ -686,6 +745,62 @@ export default function ClaimPage() {
             >
               View transaction on Stellar Expert →
             </a>
+          </div>
+        )}
+
+        {/* ── #531: Copy claim link ── */}
+        {status === "success" && sep7Uri && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
+            <button
+              type="button"
+              onClick={handleCopyLink}
+              className="claim-btn"
+              data-testid="copy-link-btn"
+              style={{
+                background: copyState === "idle" ? "#1e1e1e" : "#1a3a1a",
+                color: copyState === "idle" ? "#ededed" : "#4caf50",
+                border: "1px solid #333",
+              }}
+            >
+              {copyState === "idle" && "📋 Copy Claim Link"}
+              {copyState === "copied" && "✓ Copied!"}
+              {copyState === "fallback-copied" && "✓ Copied (fallback)!"}
+              {copyState === "manual" && "📋 Copy Claim Link"}
+            </button>
+
+            {/* Manual fallback — shown when both clipboard methods fail */}
+            {copyState === "manual" && (
+              <div
+                role="alert"
+                data-testid="copy-manual-fallback"
+                style={{
+                  padding: "12px 16px",
+                  borderRadius: 8,
+                  background: "#111",
+                  border: "1px solid #f0a500",
+                  color: "#f0a500",
+                  fontSize: 13,
+                }}
+              >
+                <p style={{ margin: "0 0 8px" }}>
+                  Could not copy automatically. Copy the link manually below.
+                </p>
+                <code
+                  data-testid="copy-manual-uri"
+                  style={{
+                    display: "block",
+                    wordBreak: "break-all",
+                    background: "#0a0a0a",
+                    padding: "8px 10px",
+                    borderRadius: 6,
+                    fontSize: 11,
+                    color: "#ededed",
+                  }}
+                >
+                  {sep7Uri}
+                </code>
+              </div>
+            )}
           </div>
         )}
       </div>
