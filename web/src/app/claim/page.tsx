@@ -479,6 +479,9 @@ export default function ClaimPage() {
       });
       const result = await client.submitSignedTransaction(signedXdr, proof);
       setTxHash(result.txHash);
+      // Build a SEP-7 tx URI so users can share or rebroadcast the signed tx
+      setSep7Uri(`web+stellar:tx?xdr=${encodeURIComponent(signedXdr)}`);
+      setCopyState("idle");
       setStatus("success");
       setMessage(`Successfully claimed ${result.amount.toString()} tokens!`);
 
