@@ -329,3 +329,14 @@ describe("ClaimPage — check error flow", () => {
     );
   });
 });
+
+describe("ClaimPage — network badge", () => {
+  it("renders the active network badge next to the heading", () => {
+    renderWithNetwork(<ClaimPage />);
+
+    const badge = screen.getByTestId("network-badge");
+    expect(badge).toBeInTheDocument();
+    expect(badge).toHaveTextContent("testnet");
+    expect(badge).toHaveClass("network-badge--testnet");
+  });
+});

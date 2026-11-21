@@ -496,7 +496,25 @@ export default function ClaimPage() {
       {/* ── Inject pure-CSS spinner keyframes ── */}
       <style>{spinnerStyles}</style>
 
-      <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>Check &amp; Claim</h1>
+      <h1
+        style={{
+          fontSize: 28,
+          fontWeight: 700,
+          marginBottom: 8,
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          flexWrap: "wrap",
+        }}
+      >
+        Check &amp; Claim{" "}
+        <span
+          className={`network-badge network-badge--${network}`}
+          data-testid="network-badge"
+        >
+          {network}
+        </span>
+      </h1>
       <p style={{ color: "#888", marginBottom: totalDeposited !== null ? 16 : 32 }}>
         Connect your Freighter wallet to check eligibility and claim your tokens.
       </p>
