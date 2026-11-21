@@ -110,3 +110,64 @@ describe("ClaimPage — network badge", () => {
     expect(badge).toHaveClass("network-badge--testnet");
   });
 });
+
+describe("ClaimPage — expiration banner (#519)", () => {
+  // Fixed "now" so expiration-relative assertions are deterministic.
+  const NOW_SECS = BigInt(Math.floor(new Date("2026-01-01T00:00:00Z").getTime() / 1000));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIsConnected.mockResolvedValue(true);
+    mockGetPublicKey.mockResolvedValue(ELIGIBLE_ADDRESS);
+    mockIsClaimedFn.mockResolvedValue(false);
+    // Pin Date.now so isExpired / expiresSoon are computed against a stable clock.
+    vi.spyOn(Date, "now").mockReturnValue(Number(NOW_SECS) * 1000);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows "expires soon" banner when expiration is 24 hours from now', async () => {
+    mockExpirationFn.mockResolvedValue(NOW_SECS + BigInt(24 * 60 * 60));
+    renderWithNetwork(<ClaimPage />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/claim soon/i)).toBeInTheDocument()
+    );
+    expect(screen.queryByText(/has expired/i)).not.toBeInTheDocument();
+  });
+
+  it('shows "airdrop has expired" banner when expiration is in the past', async () => {
+    mockExpirationFn.mockResolvedValue(NOW_SECS - BigInt(60 * 60));
+    renderWithNetwork(<ClaimPage />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(/has expired/i)
+    );
+    expect(screen.queryByText(/claim soon/i)).not.toBeInTheDocument();
+  });
+
+  it("shows no expiration banner when expiration is 7 days from now", async () => {
+    mockExpirationFn.mockResolvedValue(NOW_SECS + BigInt(7 * 24 * 60 * 60));
+    renderWithNetwork(<ClaimPage />);
+
+    await waitFor(() => expect(mockExpirationFn).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/has expired/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/claim soon/i)).not.toBeInTheDocument();
+  });
+
+  it("disables the Check button when the airdrop is expired", async () => {
+    mockExpirationFn.mockResolvedValue(NOW_SECS - BigInt(60 * 60));
+    renderWithNetwork(<ClaimPage />);
+
+    await connectWallet(); // walletConnected → true, so disabled state reflects isExpired
+
+    await waitFor(() => {
+      const btn = screen.getByRole("button", { name: /check eligibility/i });
+      expect(btn).toBeDisabled();
+      expect(btn).toHaveAttribute("aria-disabled", "true");
+    });
+  });
+});
+
