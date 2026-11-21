@@ -1,5 +1,5 @@
 /**
- * Unit tests for the programmatic deploy command (Issue #69).
+ * Unit tests for the programmatic deploy command (Issues #69, #500).
  *
  * All Stellar RPC calls are mocked — no real network access occurs.
  */
@@ -7,27 +7,73 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { programmaticDeploy, type DeployOptions } from "./deploy.js";
 
-// ─── Mock @stellar/stellar-sdk ──────────────────────────────────────────────
+// ─── Hoist shared values so they are available inside vi.mock factories ──────
 
-// We capture the mock server so individual tests can configure return values.
-let mockServer: {
-  getAccount: ReturnType<typeof vi.fn>;
-  simulateTransaction: ReturnType<typeof vi.fn>;
-  sendTransaction: ReturnType<typeof vi.fn>;
-  getTransaction: ReturnType<typeof vi.fn>;
-};
+const { mockServer, defaultReadFile } = vi.hoisted(() => {
+  const defaultReadFile = (path: unknown) => {
+    if (String(path).endsWith(".wasm")) {
+      return Promise.resolve(Buffer.from([0x00, 0x61, 0x73, 0x6d]));
+    }
+    return Promise.resolve(
+      JSON.stringify({
+        root: "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        totalAmount: "150000",
+        proofs: {},
+      })
+    );
+  };
 
-vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@stellar/stellar-sdk")>();
-
-  mockServer = {
+  const mockServer = {
     getAccount: vi.fn(),
     simulateTransaction: vi.fn(),
     sendTransaction: vi.fn(),
     getTransaction: vi.fn(),
   };
 
+  return { mockServer, defaultReadFile };
+});
+
+// ─── Mock @stellar/stellar-sdk ──────────────────────────────────────────────
+
+vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@stellar/stellar-sdk")>();
+
+  // Capture real XDR type tags so === comparisons in source code work correctly.
+  const scvBytesTag = actual.xdr.ScValType.scvBytes();
+  const scvAddressTag = actual.xdr.ScValType.scvAddress();
+  const scAddressContractTag = actual.xdr.ScAddressType.scAddressTypeContract();
+
   const MockServer = vi.fn(() => mockServer);
+
+  // Fake contract address bytes (32 bytes).
+  const fakeContractBytes = Buffer.alloc(32, 0xcc);
+
+  // fromXDR returns scvBytes on first call (WASM upload result) and
+  // scvAddress on second call (deploy contract result).
+  const fromXDR = vi.fn()
+    .mockReturnValueOnce({
+      v3: vi.fn().mockReturnValue({
+        sorobanMeta: vi.fn().mockReturnValue({
+          returnValue: vi.fn().mockReturnValue({
+            switch: vi.fn().mockReturnValue(scvBytesTag),
+            bytes: vi.fn().mockReturnValue(Buffer.alloc(32, 0xab)),
+          }),
+        }),
+      }),
+    })
+    .mockReturnValue({
+      v3: vi.fn().mockReturnValue({
+        sorobanMeta: vi.fn().mockReturnValue({
+          returnValue: vi.fn().mockReturnValue({
+            switch: vi.fn().mockReturnValue(scvAddressTag),
+            address: vi.fn().mockReturnValue({
+              switch: vi.fn().mockReturnValue(scAddressContractTag),
+              contractId: vi.fn().mockReturnValue(fakeContractBytes),
+            }),
+          }),
+        }),
+      }),
+    });
 
   return {
     ...actual,
@@ -64,28 +110,29 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
     Contract: vi.fn().mockImplementation(() => ({
       call: vi.fn().mockReturnValue({}),
     })),
-    Address: vi.fn().mockImplementation((addr: string) => ({
-      toScVal: vi.fn().mockReturnValue({}),
-      toString: () => addr,
-    })),
+    Address: Object.assign(
+      vi.fn().mockImplementation((addr: string) => ({
+        toScVal: vi.fn().mockReturnValue({}),
+        toString: () => addr,
+      })),
+      {
+        // Static method used in extractContractIdFromResult.
+        contract: vi.fn().mockReturnValue({
+          toString: () => "CMOCKCONTRACTID123456789012345678901234567890123456",
+        }),
+      }
+    ),
     xdr: {
       ...actual.xdr,
       ScVal: {
+        ...actual.xdr.ScVal,
         scvBytes: vi.fn().mockReturnValue({}),
       },
       TransactionMeta: {
-        fromXDR: vi.fn().mockReturnValue({
-          v3: vi.fn().mockReturnValue({
-            sorobanMeta: vi.fn().mockReturnValue({
-              returnValue: vi.fn().mockReturnValue({
-                switch: vi.fn().mockReturnValue({ name: "scvBytes" }),
-                bytes: vi.fn().mockReturnValue(Buffer.alloc(32, 0xab)),
-              }),
-            }),
-          }),
-        }),
+        fromXDR,
       },
-      ScValType: actual.xdr?.ScValType ?? {},
+      ScValType: actual.xdr.ScValType,
+      ScAddressType: actual.xdr.ScAddressType,
     },
     nativeToScVal: vi.fn().mockReturnValue({}),
     Networks: actual.Networks,
@@ -95,20 +142,7 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
 // ─── Mock fs/promises ────────────────────────────────────────────────────────
 
 vi.mock("fs/promises", () => ({
-  readFile: vi.fn().mockImplementation((path: string) => {
-    // Return fake WASM bytes for .wasm files
-    if (String(path).endsWith(".wasm")) {
-      return Promise.resolve(Buffer.from([0x00, 0x61, 0x73, 0x6d])); // WASM magic bytes
-    }
-    // Return a mock Merkle tree JSON for .json files
-    return Promise.resolve(
-      JSON.stringify({
-        root: "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-        totalAmount: "150000",
-        proofs: {},
-      })
-    );
-  }),
+  readFile: vi.fn().mockImplementation(defaultReadFile),
 }));
 
 // ─── Test helpers ────────────────────────────────────────────────────────────
@@ -120,6 +154,7 @@ const BASE_OPTS: DeployOptions = {
   expiration: "9999999999",
   secretKey: "STEST123SECRETKEY",
   network: "testnet",
+  pollIntervalMs: 0, // skip sleep() delays in tests
 };
 
 /** Build a successful simResult (no 'error' key). */
@@ -132,24 +167,115 @@ function simSuccess() {
 }
 
 /** Build a fake successful GetTransaction response. */
-function txSuccess(returnValueOverride?: object) {
+function txSuccess() {
   return {
     status: "SUCCESS" as const,
     resultMetaXdr: {
       toXDR: () => Buffer.alloc(0),
     },
-    // Store override so we can use it in extractReturnValue
-    _returnValue: returnValueOverride,
   };
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
-describe("programmaticDeploy (Issue #69)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+describe("programmaticDeploy (Issues #69, #500)", () => {
+  beforeEach(async () => {
+    // Reset only the RPC server mocks (not the SDK module mocks which are complex to restore).
+    mockServer.getAccount.mockReset();
+    mockServer.simulateTransaction.mockReset();
+    mockServer.sendTransaction.mockReset();
+    mockServer.getTransaction.mockReset();
 
-    // Default happy-path responses
+    // Restore readFile default after reset.
+    const { readFile } = await import("fs/promises");
+    vi.mocked(readFile).mockReset();
+    vi.mocked(readFile).mockImplementation(defaultReadFile);
+
+    // Restore nativeToScVal.
+    const { nativeToScVal } = await import("@stellar/stellar-sdk");
+    vi.mocked(nativeToScVal).mockReset();
+    vi.mocked(nativeToScVal).mockReturnValue({} as never);
+
+    // Restore TransactionBuilder.
+    const { TransactionBuilder } = await import("@stellar/stellar-sdk");
+    vi.mocked(TransactionBuilder).mockReset();
+    vi.mocked(TransactionBuilder).mockImplementation(() => ({
+      addOperation: vi.fn().mockReturnThis(),
+      setTimeout: vi.fn().mockReturnThis(),
+      build: vi.fn().mockReturnValue({ sign: vi.fn(), toXDR: vi.fn() }),
+    }) as never);
+
+    // Restore Contract.
+    const { Contract, Address } = await import("@stellar/stellar-sdk");
+    vi.mocked(Contract).mockReset();
+    vi.mocked(Contract).mockImplementation(() => ({ call: vi.fn().mockReturnValue({}) }) as never);
+
+    // Restore Address constructor mock (instance method toScVal).
+    vi.mocked(Address).mockReset();
+    vi.mocked(Address).mockImplementation((addr: string) => ({
+      toScVal: vi.fn().mockReturnValue({}),
+      toString: () => addr,
+    }) as never);
+
+    // Restore Address.contract static method if it exists on the mock.
+    const addressContractMock = (Address as unknown as { contract?: ReturnType<typeof vi.fn> }).contract;
+    if (addressContractMock && typeof addressContractMock.mockReturnValue === "function") {
+      addressContractMock.mockReset();
+      addressContractMock.mockReturnValue({
+        toString: () => "CMOCKCONTRACTID123456789012345678901234567890123456",
+      });
+    }
+
+    // Restore Keypair.fromSecret.
+    const { Keypair } = await import("@stellar/stellar-sdk");
+    vi.mocked(Keypair.fromSecret).mockReset();
+    vi.mocked(Keypair.fromSecret).mockReturnValue({
+      publicKey: vi.fn().mockReturnValue("GADMIN123PUBLICKEY"),
+      sign: vi.fn(),
+    } as never);
+
+    // Restore xdr.TransactionMeta.fromXDR with correct per-call return values.
+    const { xdr } = await import("@stellar/stellar-sdk");
+    const actual = await import("@stellar/stellar-sdk");
+    const scvBytesTag = actual.xdr.ScValType.scvBytes();
+    const scvAddressTag = actual.xdr.ScValType.scvAddress();
+    const scAddressContractTag = actual.xdr.ScAddressType.scAddressTypeContract();
+    const fakeContractBytes = Buffer.alloc(32, 0xcc);
+
+    vi.mocked(xdr.TransactionMeta.fromXDR).mockReset();
+    vi.mocked(xdr.TransactionMeta.fromXDR)
+      .mockReturnValueOnce({
+        v3: vi.fn().mockReturnValue({
+          sorobanMeta: vi.fn().mockReturnValue({
+            returnValue: vi.fn().mockReturnValue({
+              switch: vi.fn().mockReturnValue(scvBytesTag),
+              bytes: vi.fn().mockReturnValue(Buffer.alloc(32, 0xab)),
+            }),
+          }),
+        }),
+      } as never)
+      .mockReturnValue({
+        v3: vi.fn().mockReturnValue({
+          sorobanMeta: vi.fn().mockReturnValue({
+            returnValue: vi.fn().mockReturnValue({
+              switch: vi.fn().mockReturnValue(scvAddressTag),
+              address: vi.fn().mockReturnValue({
+                switch: vi.fn().mockReturnValue(scAddressContractTag),
+                contractId: vi.fn().mockReturnValue(fakeContractBytes),
+              }),
+            }),
+          }),
+        }),
+      } as never);
+
+    // Restore rpc.assembleTransaction.
+    const { rpc } = await import("@stellar/stellar-sdk");
+    vi.mocked(rpc.assembleTransaction).mockReset();
+    vi.mocked(rpc.assembleTransaction).mockReturnValue({
+      build: vi.fn().mockReturnValue({ sign: vi.fn(), toXDR: vi.fn() }),
+    } as never);
+
+    // Default happy-path RPC responses.
     mockServer.getAccount.mockResolvedValue({
       id: "GADMIN123PUBLICKEY",
       sequenceNumber: () => "100",
@@ -160,15 +286,12 @@ describe("programmaticDeploy (Issue #69)", () => {
     mockServer.getTransaction.mockResolvedValue(txSuccess());
   });
 
-  it("calls getAccount, simulateTransaction, and sendTransaction for each of the 3 steps", async () => {
-    // Each step (upload, deploy, init) calls: getAccount(×2 refreshes), simulateTransaction, sendTransaction.
-    // getTransaction is called once per step after sendTransaction.
+  it("calls simulateTransaction and sendTransaction for each of the 3 steps", async () => {
     mockServer.sendTransaction
       .mockResolvedValueOnce({ status: "PENDING", hash: "upload-hash" })
       .mockResolvedValueOnce({ status: "PENDING", hash: "deploy-hash" })
       .mockResolvedValueOnce({ status: "PENDING", hash: "init-hash" });
 
-    // getTransaction resolves SUCCESS for each hash
     mockServer.getTransaction.mockResolvedValue(txSuccess());
 
     await programmaticDeploy(BASE_OPTS);
@@ -190,7 +313,6 @@ describe("programmaticDeploy (Issue #69)", () => {
   });
 
   it("throws if contract deploy simulation returns an error", async () => {
-    // First simulation (upload) succeeds, second (deploy) fails
     mockServer.simulateTransaction
       .mockResolvedValueOnce(simSuccess())
       .mockResolvedValueOnce({ error: "Deploy simulation error" });
@@ -224,8 +346,8 @@ describe("programmaticDeploy (Issue #69)", () => {
 
   it("throws if deploy sendTransaction returns ERROR status", async () => {
     mockServer.sendTransaction
-      .mockResolvedValueOnce({ status: "PENDING", hash: "upload-hash" }) // upload ok
-      .mockResolvedValueOnce({ status: "ERROR", errorResult: { toXDR: () => "err" } }); // deploy fails
+      .mockResolvedValueOnce({ status: "PENDING", hash: "upload-hash" })
+      .mockResolvedValueOnce({ status: "ERROR", errorResult: { toXDR: () => "err" } });
 
     await expect(programmaticDeploy(BASE_OPTS)).rejects.toThrow(
       /Contract deploy transaction failed/
@@ -233,16 +355,11 @@ describe("programmaticDeploy (Issue #69)", () => {
   });
 
   it("throws a timeout error if getTransaction never returns SUCCESS", async () => {
-    // Override the polling timeout via a short value — we'll test the flow
-    // by making getTransaction always return NOT_FOUND.
     mockServer.getTransaction.mockResolvedValue({ status: "NOT_FOUND" });
 
-    // The actual timeout is 90s which is too long for a unit test,
-    // so we mock Date.now to advance time artificially.
     const realDateNow = Date.now;
     let callCount = 0;
     vi.spyOn(Date, "now").mockImplementation(() => {
-      // After 5 calls, jump past the 90s timeout
       callCount++;
       return callCount > 5 ? realDateNow() + 100_000 : realDateNow();
     });
@@ -258,9 +375,9 @@ describe("programmaticDeploy (Issue #69)", () => {
 
   it("rejects if Merkle tree JSON has no root field", async () => {
     const { readFile } = await import("fs/promises");
-    vi.mocked(readFile).mockImplementationOnce((path) => {
+    vi.mocked(readFile).mockImplementation((path) => {
       if (String(path).endsWith(".wasm")) return Promise.resolve(Buffer.from([0x00]));
-      return Promise.resolve(JSON.stringify({ totalAmount: "1000" })); // missing root
+      return Promise.resolve(JSON.stringify({ totalAmount: "1000" }));
     });
 
     await expect(programmaticDeploy(BASE_OPTS)).rejects.toThrow(
@@ -270,15 +387,64 @@ describe("programmaticDeploy (Issue #69)", () => {
 
   it("rejects if Merkle tree JSON has no totalAmount field", async () => {
     const { readFile } = await import("fs/promises");
-    vi.mocked(readFile).mockImplementationOnce((path) => {
+    vi.mocked(readFile).mockImplementation((path) => {
       if (String(path).endsWith(".wasm")) return Promise.resolve(Buffer.from([0x00]));
       return Promise.resolve(
         JSON.stringify({ root: "abc123".repeat(10).slice(0, 64) })
-      ); // missing totalAmount
+      );
     });
 
     await expect(programmaticDeploy(BASE_OPTS)).rejects.toThrow(
       /missing 'totalAmount'/
     );
+  });
+
+  // ── Issue #500: 7-argument initialize call ───────────────────────────────
+
+  it("passes 7 arguments to initialize (5 required + 2 Option<u32> for TTLs)", async () => {
+    const { Contract, nativeToScVal } = await import("@stellar/stellar-sdk");
+    const mockCallFn = vi.fn().mockReturnValue({});
+    vi.mocked(Contract).mockImplementation(() => ({ call: mockCallFn }) as never);
+
+    mockServer.sendTransaction
+      .mockResolvedValueOnce({ status: "PENDING", hash: "upload-hash" })
+      .mockResolvedValueOnce({ status: "PENDING", hash: "deploy-hash" })
+      .mockResolvedValueOnce({ status: "PENDING", hash: "init-hash" });
+
+    await programmaticDeploy(BASE_OPTS);
+
+    // contractInst.call("initialize", ...7 ScVal args) → 8 total call args.
+    const initCall = mockCallFn.mock.calls.find(([method]) => method === "initialize");
+    expect(initCall).toBeDefined();
+    expect(initCall!.length).toBe(8);
+
+    // nativeToScVal is called for: totalAmount (i128), expiration (u64),
+    // claimed_ttl (option null), instance_ttl (option null) — at least 4.
+    expect(vi.mocked(nativeToScVal).mock.calls.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("passes numeric claimed_ttl and instance_ttl as u32 ScVals when provided", async () => {
+    const { nativeToScVal } = await import("@stellar/stellar-sdk");
+
+    await programmaticDeploy({ ...BASE_OPTS, claimedTtl: 1000, instanceTtl: 2000 });
+
+    const calls = vi.mocked(nativeToScVal).mock.calls;
+    const u32Calls = calls.filter(([, opts]) => (opts as { type: string })?.type === "u32");
+    expect(u32Calls.length).toBe(2);
+    expect(u32Calls[0][0]).toBe(1000);
+    expect(u32Calls[1][0]).toBe(2000);
+  });
+
+  it("passes Option::None ScVals for TTLs when claimedTtl and instanceTtl are omitted", async () => {
+    const { nativeToScVal } = await import("@stellar/stellar-sdk");
+
+    await programmaticDeploy(BASE_OPTS); // no claimedTtl / instanceTtl
+
+    const calls = vi.mocked(nativeToScVal).mock.calls;
+    const optionNoneCalls = calls.filter(
+      ([val, opts]) => val === null && (opts as { type: string })?.type === "option"
+    );
+    // One None for claimed_ttl, one for instance_ttl.
+    expect(optionNoneCalls.length).toBe(2);
   });
 });
