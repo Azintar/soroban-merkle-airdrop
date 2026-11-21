@@ -1,6 +1,23 @@
+"use client";
+
 import Link from "next/link";
+import { useNetwork } from "./context/NetworkContext";
 
 export default function HomePage() {
+  const { contractId } = useNetwork();
+  const configured = Boolean(contractId);
+
+  if (!configured) {
+    return (
+      <div>
+        <div role="status">
+          <p>No airdrop contract configured.</p>
+          <p>Set <code>NEXT_PUBLIC_AIRDROP_CONTRACT_ID</code> in your environment.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div>
       <div style={{ textAlign: "center", marginBottom: 56 }}>
