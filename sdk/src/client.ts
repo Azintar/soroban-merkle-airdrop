@@ -49,6 +49,24 @@ export function createAirdropClient(config: NetworkConfig) {
     return BigInt(scValToNative(result) as number);
   }
 
+  /** Fetch total tokens claimed so far. */
+  async function totalClaimed(): Promise<bigint> {
+    const result = await simulateRead(contractInst.call("total_claimed"));
+    return BigInt(scValToNative(result) as number);
+  }
+
+  /**
+   * Compute the remaining airdrop balance.
+   *
+   * The contract exposes `total_deposited()` and `total_claimed()` but has no
+   * `remaining_balance` function, so this is calculated client-side as:
+   *   remainingBalance = totalDeposited - totalClaimed
+   */
+  async function remainingBalance(): Promise<bigint> {
+    const [deposited, claimed] = await Promise.all([totalDeposited(), totalClaimed()]);
+    return deposited - claimed;
+  }
+
   /**
    * Submit a claim transaction.
    *
@@ -138,5 +156,5 @@ export function createAirdropClient(config: NetworkConfig) {
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  return { isClaimed, isActive, merkleRoot, totalDeposited, claim };
+  return { isClaimed, isActive, merkleRoot, totalDeposited, totalClaimed, remainingBalance, claim };
 }
