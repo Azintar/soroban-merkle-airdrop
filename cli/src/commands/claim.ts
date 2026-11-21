@@ -21,6 +21,88 @@ import {
 } from "@soroban-merkle-airdrop/sdk";
 import { translateContractError } from "../errors.js";
 
+// ─── Exported types (for tests) ───────────────────────────────────────────────
+
+export interface ClaimOptions {
+  tree: string;
+  address: string;
+  secretKey: string;
+  network: string;
+  contractId: string;
+  verifyOnly?: boolean;
+}
+
+export interface ClaimResult {
+  txHash: string;
+  address: string;
+  amount: bigint;
+}
+
+export interface VerifyOnlyResult {
+  verified: true;
+  alreadyClaimed: boolean;
+  rootMismatch: boolean;
+  onChainRoot: string | null;
+  treeRoot: string;
+  address: string;
+  amount: bigint;
+}
+
+// ─── Core logic (exported for tests) ─────────────────────────────────────────
+
+export async function runClaim(opts: ClaimOptions): Promise<ClaimResult | VerifyOnlyResult> {
+  const raw = JSON.parse(await readFile(resolve(opts.tree), "utf-8"));
+  const entry = raw.proofs[opts.address];
+
+  if (!entry) {
+    throw new Error(`Address ${opts.address} not found in airdrop list`);
+  }
+
+  const proof = { ...entry, amount: BigInt(entry.amount) };
+
+  const valid = verifyProof(raw.root, proof.address, proof.amount, proof.proof);
+  if (!valid) {
+    throw new Error("Proof verification failed — tree may be corrupted");
+  }
+
+  const preset = NETWORKS[opts.network];
+  if (!preset) {
+    throw new Error(`Unknown network: ${opts.network}. Use testnet or mainnet.`);
+  }
+
+  const client = createAirdropClient({ ...preset, contractId: opts.contractId });
+
+  if (opts.verifyOnly) {
+    const [alreadyClaimed, onChainRoot] = await Promise.all([
+      client.isClaimed(opts.address),
+      client.merkleRoot(),
+    ]);
+
+    const rootMismatch =
+      onChainRoot !== null && onChainRoot !== raw.root;
+
+    return {
+      verified: true,
+      alreadyClaimed,
+      rootMismatch,
+      onChainRoot,
+      treeRoot: raw.root,
+      address: opts.address,
+      amount: proof.amount,
+    };
+  }
+
+  const already = await client.isClaimed(opts.address);
+  if (already) {
+    throw new Error(`${opts.address} has already claimed.`);
+  }
+
+  const result = await client.claim(proof, opts.secretKey);
+  return { txHash: result.txHash, address: result.address, amount: result.amount };
+}
+
+// ─── Commander command definition ─────────────────────────────────────────────
+
 export const claimCommand = new Command("claim")
   .description("Claim tokens from the airdrop")
   .requiredOption("-t, --tree <file>", "Merkle tree JSON (output of generate)")
@@ -91,6 +173,7 @@ export const claimCommand = new Command("claim")
         // Override rpcUrl if --rpc-url was provided on the global options.
         ...(globalOpts.rpcUrl ? { rpcUrl: globalOpts.rpcUrl } : {}),
         contractId,
+        verifyOnly: opts.verifyOnly,
       });
 
       // ── Already claimed check ──────────────────────────────────────────────
