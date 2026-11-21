@@ -157,15 +157,33 @@ cd web && pnpm install && pnpm dev
 merkle-airdrop <command> [options]
 
 Commands:
-  generate   Build Merkle tree from CSV → JSON (run off-chain by organiser)
-  claim      Submit claim transaction for an address
-  status     Query on-chain contract status
-  deploy     Deployment guide (uses Stellar CLI)
+  generate     Build Merkle tree from CSV → JSON (run off-chain by organiser)
+  claim        Submit claim transaction for an address
+  status       Query on-chain contract status
+  deploy       Deployment guide (uses Stellar CLI)
+  update-root  Rotate the on-chain Merkle root to a new distribution tree (admin only)
 
 Global options:
   -n, --network <network>      testnet | mainnet  [default: testnet]
   --contract-id <id>           Airdrop contract address
 ```
+
+### update-root
+
+Rotate the distribution tree for a live airdrop. Only the contract admin may call this.
+
+```
+merkle-airdrop update-root \
+  --tree <new-merkle-tree.json> \
+  --admin-key <S...> \
+  --network testnet \
+  --contract-id <C...>
+```
+
+| Option | Description |
+| --- | --- |
+| `-t, --tree <file>` | New Merkle tree JSON (output of `generate`) |
+| `-k, --admin-key <key>` | Admin secret key (or set `STELLAR_SECRET_KEY`) |
 
 ## How the Merkle Proof Works
 
