@@ -20,6 +20,7 @@ import {
   validateMerkleTreeFile,
 } from "@soroban-merkle-airdrop/sdk";
 import { translateContractError } from "../errors.js";
+import { validateSecretKey } from "../validation.js";
 
 // ─── Exported types (for tests) ───────────────────────────────────────────────
 
@@ -133,13 +134,11 @@ export const claimCommand = new Command("claim")
       process.exit(1);
     }
 
-    if (!verifyOnly && !secretKey) {
-      console.error(chalk.red("Error: --secret-key or STELLAR_SECRET_KEY required (omit with --verify-only)"));
-      process.exit(1);
-    }
-
     const spinner = ora("Loading Merkle tree...").start();
     try {
+        const validatedSecretKey = verifyOnly
+          ? undefined
+          : validateSecretKey(secretKey, "claim");
       // Parse and validate the tree file schema.
       let raw: unknown;
       try {
@@ -223,7 +222,7 @@ export const claimCommand = new Command("claim")
 
         // simulateClaim takes the public key, not the secret key
         const { Keypair } = await import("@stellar/stellar-sdk");
-        const publicKey = Keypair.fromSecret(secretKey).publicKey();
+        const publicKey = Keypair.fromSecret(validatedSecretKey!).publicKey();
 
         const sim = await client.simulateClaim(proof, publicKey);
 
@@ -252,7 +251,7 @@ export const claimCommand = new Command("claim")
 
       // ── Live mode: submit the transaction ─────────────────────────────────
       spinner.text = "Submitting claim transaction...";
-      const result = await client.claim(proof, secretKey);
+      const result = await client.claim(proof, validatedSecretKey!);
 
       spinner.succeed(chalk.green("Claim submitted!"));
       console.log(`\n  ${chalk.bold("Tx hash:")} ${chalk.cyan(result.txHash)}`);

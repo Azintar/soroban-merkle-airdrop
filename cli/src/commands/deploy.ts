@@ -33,6 +33,7 @@ import {
   Address,
   Contract,
 } from "@stellar/stellar-sdk";
+import { validateSecretKey } from "../validation.js";
 
 // ─── RPC preset URLs ─────────────────────────────────────────────────────────
 
@@ -369,21 +370,20 @@ export const deployCommand = new Command("deploy")
     }
 
     // ── Live deploy ─────────────────────────────────────────────────────────
-    if (!secretKey) {
-      console.error(chalk.red("Error: --secret-key or STELLAR_SECRET_KEY is required for deployment"));
-      process.exit(1);
-    }
 
     const spinner = ora("Deploying airdrop contract…").start();
 
     try {
+
+      const validatedSecretKey = validateSecretKey(secretKey, "deploy");
+
       spinner.text = "Uploading WASM…";
       const result = await programmaticDeploy({
         wasm: opts.wasm,
         token: opts.token,
         tree: opts.tree,
         expiration: opts.expiration,
-        secretKey,
+        secretKey: validatedSecretKey,
         network,
         rpcUrl,
         claimedTtl: opts.claimedTtl,
