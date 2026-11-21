@@ -1,24 +1,28 @@
 import { defineConfig } from "vitest/config";
-import path from "node:path";
+import react from "@vitejs/plugin-react";
+import path from "path";
 
 export default defineConfig({
+  plugins: [react()],
   test: {
-    globals: true,
     environment: "jsdom",
-    setupFiles: ["./vitest.setup.ts"],
+    globals: true,
+    setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
-    alias: {
-      // Resolve the workspace SDK to its source so `cd web && pnpm test`
-      // works without a prior `pnpm build` of the SDK package.
-      "@soroban-merkle-airdrop/sdk": path.resolve(
-        __dirname,
-        "../sdk/src/index.ts"
-      ),
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "lcov"],
     },
   },
-  // Match Next.js' automatic JSX runtime so components render without an
-  // explicit `import React` (jsdom does not support raw JSX).
-  esbuild: {
-    jsx: "automatic",
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+      // Point the SDK at a lightweight stub so tests don't need stellar-sdk
+      // The stub's symbols are fully replaced by vi.mock() in each test file.
+      "@soroban-merkle-airdrop/sdk": path.resolve(
+        __dirname,
+        "./src/test/sdk-stub.ts"
+      ),
+    },
   },
 });
