@@ -394,3 +394,70 @@ describe("ClaimPage — expiration banner (#519)", () => {
   });
 });
 
+describe("ClaimPage — tab navigation (#518)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIsConnected.mockResolvedValue(true);
+    mockGetPublicKey.mockResolvedValue(ELIGIBLE_ADDRESS);
+    mockIsClaimedFn.mockResolvedValue(false);
+    // Keep expiration far-future so tab tests are not affected by expiration logic.
+    mockExpirationFn.mockResolvedValue(99999999999n);
+  });
+
+  it("shows the Load from URL panel by default", () => {
+    renderWithNetwork(<ClaimPage />);
+
+    expect(
+      screen.getByRole("tabpanel", { name: /load from url/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("tabpanel", { name: /paste json/i })
+    ).not.toBeInTheDocument();
+    // The URL tab is selected by default.
+    expect(screen.getByRole("tab", { name: /load from url/i })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+  });
+
+  it("switches to the Paste JSON panel when the Paste JSON tab is clicked", async () => {
+    renderWithNetwork(<ClaimPage />);
+
+    await userEvent.click(screen.getByRole("tab", { name: /paste json/i }));
+
+    expect(
+      screen.getByRole("tabpanel", { name: /paste json/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("tabpanel", { name: /load from url/i })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /paste json/i })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(screen.getByRole("tab", { name: /load from url/i })).toHaveAttribute(
+      "aria-selected",
+      "false"
+    );
+  });
+
+  it("switches back to the Load from URL panel when its tab is clicked", async () => {
+    renderWithNetwork(<ClaimPage />);
+
+    await userEvent.click(screen.getByRole("tab", { name: /paste json/i }));
+    expect(
+      screen.getByRole("tabpanel", { name: /paste json/i })
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("tab", { name: /load from url/i }));
+
+    expect(
+      screen.getByRole("tabpanel", { name: /load from url/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("tabpanel", { name: /paste json/i })
+    ).not.toBeInTheDocument();
+  });
+});
+
+
