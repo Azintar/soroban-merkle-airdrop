@@ -97,6 +97,18 @@ export default function ClaimPage() {
   const [message, setMessage] = useState("");
   const [txHash, setTxHash] = useState("");
 
+  // ── SEP-7 / copy-link state ──────────────────────────────────────────────
+  const [sep7Uri, setSep7Uri] = useState<string | null>(null);
+  const [sep7Loading, setSep7Loading] = useState(false);
+  const [sep7Error, setSep7Error] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  // ── Progress bar state ───────────────────────────────────────────────────
+  /** Total tokens deposited into the contract, or null if unknown. */
+  const [totalDeposited, setTotalDeposited] = useState<bigint | null>(null);
+  /** Total tokens claimed so far, or null if unknown. */
+  const [totalClaimed, setTotalClaimed] = useState<bigint | null>(null);
+
   // ── #77: Expiration state ────────────────────────────────────────────────
   /** Unix timestamp (seconds) when the airdrop expires, or null if unknown. */
   const [expirationTs, setExpirationTs] = useState<bigint | null>(null);
@@ -138,6 +150,36 @@ export default function ClaimPage() {
       })
       .finally(() => {
         if (!cancelled) setExpirationLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [contractId, network]);
+
+  // ── Fetch progress totals on mount (when contractId becomes available) ───
+  useEffect(() => {
+    if (!contractId) return;
+
+    let cancelled = false;
+    const client = createAirdropClient({ ...NETWORKS[network], contractId });
+
+    client
+      .totalDeposited()
+      .then((amount) => {
+        if (!cancelled) setTotalDeposited(amount);
+      })
+      .catch(() => {
+        // Non-fatal: progress bar is best-effort
+      });
+
+    client
+      .totalClaimed()
+      .then((amount) => {
+        if (!cancelled) setTotalClaimed(amount);
+      })
+      .catch(() => {
+        // Non-fatal: progress bar is best-effort
       });
 
     return () => {
@@ -402,6 +444,57 @@ export default function ClaimPage() {
             <strong>This airdrop expires on {expirationDate}.</strong>{" "}
             Claim soon!
           </span>
+        </div>
+      )}
+
+      {/* ── Progress bar (totalDeposited / totalClaimed) ── */}
+      {totalDeposited !== null && totalDeposited > 0n && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="progress-bar-section"
+          style={{
+            marginBottom: 20,
+            padding: "14px 18px",
+            borderRadius: 8,
+            background: "#111",
+            border: "1px solid #333",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#aaa", marginBottom: 6 }}>
+            <span>Airdrop Progress</span>
+            <span>
+              {totalClaimed !== null
+                ? `${totalClaimed.toString()} / ${totalDeposited.toString()} claimed`
+                : `${totalDeposited.toString()} total`}
+            </span>
+          </div>
+          <div
+            role="progressbar"
+            aria-label="Airdrop claim progress"
+            aria-valuenow={totalClaimed !== null ? Number(totalClaimed) : 0}
+            aria-valuemin={0}
+            aria-valuemax={Number(totalDeposited)}
+            style={{
+              height: 8,
+              borderRadius: 4,
+              background: "#333",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                height: "100%",
+                borderRadius: 4,
+                background: "#4caf50",
+                width:
+                  totalClaimed !== null && totalDeposited > 0n
+                    ? `${Math.min(100, Number((totalClaimed * 100n) / totalDeposited))}%`
+                    : "0%",
+                transition: "width 0.4s ease",
+              }}
+            />
+          </div>
         </div>
       )}
 

@@ -21,6 +21,9 @@ const {
   mockIsClaimedFn,
   mockBuildClaimTransactionFn,
   mockSubmitSignedTransactionFn,
+  mockExpirationFn,
+  mockTotalDepositedFn,
+  mockTotalClaimedFn,
   mockVerifyProof,
   mockIsConnected,
   mockGetPublicKey,
@@ -31,6 +34,9 @@ const {
   mockSubmitSignedTransactionFn: vi.fn<
     () => Promise<{ txHash: string; amount: bigint }>
   >(),
+  mockExpirationFn: vi.fn<() => Promise<bigint | null>>().mockResolvedValue(null),
+  mockTotalDepositedFn: vi.fn<() => Promise<bigint>>().mockResolvedValue(0n),
+  mockTotalClaimedFn: vi.fn<() => Promise<bigint | null>>().mockResolvedValue(null),
   mockVerifyProof: vi.fn<() => boolean>().mockReturnValue(true),
   mockIsConnected: vi.fn<() => Promise<boolean>>(),
   mockGetPublicKey: vi.fn<() => Promise<string>>(),
@@ -43,6 +49,9 @@ vi.mock("@soroban-merkle-airdrop/sdk", () => ({
     isClaimed: mockIsClaimedFn,
     buildClaimTransaction: mockBuildClaimTransactionFn,
     submitSignedTransaction: mockSubmitSignedTransactionFn,
+    expiration: mockExpirationFn,
+    totalDeposited: mockTotalDepositedFn,
+    totalClaimed: mockTotalClaimedFn,
   })),
   verifyProof: mockVerifyProof,
   NETWORKS: {
