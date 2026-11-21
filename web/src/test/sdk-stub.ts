@@ -35,6 +35,9 @@ export interface AirdropClient {
     signedXdr: string,
     proof: ClaimProof
   ): Promise<{ txHash: string; amount: bigint }>;
+  totalDeposited(): Promise<bigint>;
+  totalClaimed(): Promise<bigint>;
+  expiration(): Promise<bigint | null>;
 }
 
 export function createAirdropClient(_config: {

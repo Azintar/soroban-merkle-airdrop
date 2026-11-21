@@ -25,6 +25,7 @@ const {
   mockIsConnected,
   mockGetPublicKey,
   mockSignTransaction,
+  mockExpirationFn,
 } = vi.hoisted(() => ({
   mockIsClaimedFn: vi.fn<() => Promise<boolean>>(),
   mockBuildClaimTransactionFn: vi.fn<() => Promise<string>>(),
@@ -35,6 +36,7 @@ const {
   mockIsConnected: vi.fn<() => Promise<boolean>>(),
   mockGetPublicKey: vi.fn<() => Promise<string>>(),
   mockSignTransaction: vi.fn<() => Promise<string>>(),
+  mockExpirationFn: vi.fn<() => Promise<bigint | null>>().mockResolvedValue(null),
 }));
 
 // ─── SDK mock ─────────────────────────────────────────────────────────────────
@@ -43,6 +45,7 @@ vi.mock("@soroban-merkle-airdrop/sdk", () => ({
     isClaimed: mockIsClaimedFn,
     buildClaimTransaction: mockBuildClaimTransactionFn,
     submitSignedTransaction: mockSubmitSignedTransactionFn,
+    expiration: mockExpirationFn,
   })),
   verifyProof: mockVerifyProof,
   NETWORKS: {
