@@ -4,12 +4,12 @@
 
 `soroban-merkle-airdrop` is a gas-efficient token distribution system for
 Stellar. Instead of pushing tokens to thousands of addresses up-front, the
-organiser stores a single 32-byte Merkle root on-chain and recipients pull
+organizer stores a single 32-byte Merkle root on-chain and recipients pull
 their allocation by submitting a compact Merkle proof. This means:
 
 - **One transaction per recipient**, paid by the recipient themselves.
 - **Constant on-chain storage** regardless of distribution size.
-- **Trustless verification** — the contract checks the proof, no organiser
+- **Trustless verification** — the contract checks the proof, no organizer
   involvement needed at claim time.
 
 ---
