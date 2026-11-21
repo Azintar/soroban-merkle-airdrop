@@ -52,8 +52,7 @@ export function createAirdropClient(config: NetworkConfig) {
     return BigInt(scValToNative(result) as number);
   }
 
-  /**
-   * Fetch the expiration timestamp (Unix seconds) after which reclaim is allowed.
+  /** Fetch the expiration timestamp (Unix seconds) after which reclaim is allowed.
    * Returns null if the contract has not been initialised or has no expiration set.
    */
   async function expiration(): Promise<bigint | null> {
@@ -61,6 +60,21 @@ export function createAirdropClient(config: NetworkConfig) {
     const native = scValToNative(result);
     if (native === null || native === undefined) return null;
     return BigInt(native as number);
+  }
+
+  /**
+   * Fetch the number of unique addresses that have successfully claimed.
+   * Returns null if the contract does not expose this counter yet.
+   */
+  async function claimedCount(): Promise<number | null> {
+    try {
+      const result = await simulateRead(contractInst.call("claimed_count"));
+      const native = scValToNative(result);
+      if (native === null || native === undefined) return null;
+      return Number(native);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -259,7 +273,7 @@ export function createAirdropClient(config: NetworkConfig) {
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  return { isClaimed, isActive, merkleRoot, totalDeposited, expiration, claim, buildClaimTransaction, submitSignedTransaction };
+  return { isClaimed, isActive, merkleRoot, totalDeposited, expiration, claimedCount, claim, buildClaimTransaction, submitSignedTransaction };
 }
 
 /**
