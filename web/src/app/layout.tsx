@@ -2,7 +2,12 @@ import type { Metadata } from "next";
 import { NetworkProvider } from "./context/NetworkContext";
 import NavBar from "./components/NavBar";
 
+const baseUrl = process.env.NEXT_PUBLIC_BASE_URL
+  ? new URL(process.env.NEXT_PUBLIC_BASE_URL)
+  : undefined;
+
 export const metadata: Metadata = {
+  metadataBase: baseUrl,
   title: "Merkle Airdrop — Stellar",
   description: "Claim your token allocation from this Merkle airdrop on Stellar.",
 };
