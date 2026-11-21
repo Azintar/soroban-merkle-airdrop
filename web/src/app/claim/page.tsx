@@ -143,6 +143,19 @@ export default function ClaimPage() {
   const [isFetching, setIsFetching] = useState(false);
   const [fetchError, setFetchError] = useState("");
 
+  // Debounce timer ref — prevents rapid re-fetches on double-click
+  const fetchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear any pending debounce timer when the component unmounts
+  useEffect(() => {
+    return () => {
+      if (fetchDebounceRef.current) {
+        clearTimeout(fetchDebounceRef.current);
+        fetchDebounceRef.current = null;
+      }
+    };
+  }, []);
+
   // Paste fallback
   const [proofJson, setProofJson] = useState("");
 
@@ -255,6 +268,18 @@ export default function ClaimPage() {
 
   async function handleFetchTree() {
     if (!treeUrl.trim()) return;
+    // Debounce: reset the timer on every click so rapid double-clicks collapse
+    // into a single fetch after 300ms of inactivity.
+    if (fetchDebounceRef.current) {
+      clearTimeout(fetchDebounceRef.current);
+    }
+    fetchDebounceRef.current = setTimeout(() => {
+      fetchDebounceRef.current = null;
+      void runFetchTree();
+    }, 300);
+  }
+
+  async function runFetchTree() {
     setIsFetching(true);
     setFetchError("");
     setTreeData(null);
