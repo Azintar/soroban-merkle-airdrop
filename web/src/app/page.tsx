@@ -1,54 +1,51 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { createAirdropClient, NETWORKS } from "@soroban-merkle-airdrop/sdk";
 import { useNetwork } from "./context/NetworkContext";
 
-/** Compute an integer percentage, clamped to [0, 100]. */
-function calcPercent(claimed: bigint, deposited: bigint): number {
-  if (deposited === 0n) return 0;
-  const pct = Number((claimed * 10000n) / deposited) / 100;
-  return Math.min(100, Math.max(0, pct));
+interface AirdropProgress {
+  totalDeposited: bigint;
+  totalClaimed: bigint;
+  remainingBalance: bigint;
 }
 
 export default function HomePage() {
   const { network, contractId } = useNetwork();
-
-  const [totalClaimed, setTotalClaimed] = useState<bigint>(0n);
-  const [totalDeposited, setTotalDeposited] = useState<bigint>(0n);
-  const [statsLoading, setStatsLoading] = useState(false);
-  const [statsError, setStatsError] = useState(false);
+  const [progress, setProgress] = useState<AirdropProgress | null>(null);
+  const [progressLoading, setProgressLoading] = useState(false);
 
   useEffect(() => {
     if (!contractId) return;
-
     let cancelled = false;
-    setStatsLoading(true);
-    setStatsError(false);
+    setProgressLoading(true);
 
     const client = createAirdropClient({ ...NETWORKS[network], contractId });
-
-    Promise.all([client.totalClaimed(), client.totalDeposited()])
-      .then(([claimed, deposited]) => {
+    Promise.all([client.totalDeposited(), client.totalClaimed()])
+      .then(([totalDeposited, totalClaimed]) => {
         if (!cancelled) {
-          setTotalClaimed(claimed);
-          setTotalDeposited(deposited);
+          setProgress({
+            totalDeposited,
+            totalClaimed,
+            remainingBalance: (totalDeposited as bigint) - (totalClaimed as bigint),
+          });
         }
       })
       .catch(() => {
-        if (!cancelled) setStatsError(true);
+        // Non-fatal: progress display is best-effort
       })
       .finally(() => {
-        if (!cancelled) setStatsLoading(false);
+        if (!cancelled) setProgressLoading(false);
       });
 
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [contractId, network]);
 
-  const percent = calcPercent(totalClaimed, totalDeposited);
+  const claimedPct =
+    progress && progress.totalDeposited > 0n
+      ? Number((progress.totalClaimed * 10000n) / progress.totalDeposited) / 100
+      : 0;
 
   return (
     <div>
@@ -67,8 +64,8 @@ export default function HomePage() {
             display: "inline-flex",
             alignItems: "center",
             padding: "14px 36px",
-            background: "#8ae4ff",
-            color: "#000",
+            background: "var(--accent)",
+            color: "var(--accent-fg)",
             fontWeight: 700,
             fontSize: 16,
             borderRadius: 10,
@@ -80,55 +77,80 @@ export default function HomePage() {
         </Link>
       </div>
 
-      {/* ── Claim progress bar ── */}
-      {!statsError && (
+      {/* ── Airdrop progress bar ── */}
+      {contractId && (
         <div
-          data-testid="progress-section"
+          aria-label="Airdrop progress"
           style={{
-            margin: "0 auto 48px",
-            maxWidth: 540,
-            padding: "20px 24px",
             border: "1px solid #222",
             borderRadius: 12,
+            padding: 24,
             background: "#111",
+            marginBottom: 40,
           }}
         >
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10, fontSize: 13, color: "#aaa" }}>
-            <span>Claim progress</span>
-            {statsLoading ? (
-              <span style={{ color: "#555" }}>Loading…</span>
-            ) : (
-              <span data-testid="progress-percent">{percent.toFixed(0)}%</span>
-            )}
-          </div>
-          <div
-            role="progressbar"
-            aria-label="Airdrop claim progress"
-            aria-valuenow={statsLoading ? undefined : percent}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            style={{
-              height: 10,
-              borderRadius: 999,
-              background: "#222",
-              overflow: "hidden",
-            }}
-          >
-            <div
-              data-testid="progress-bar"
-              style={{
-                height: "100%",
-                width: statsLoading ? "0%" : `${percent}%`,
-                background: "linear-gradient(90deg, #4caf50, #8ae4ff)",
-                borderRadius: 999,
-                transition: "width 0.4s ease",
-              }}
-            />
-          </div>
-          {!statsLoading && totalDeposited > 0n && (
-            <p style={{ margin: "8px 0 0", fontSize: 12, color: "#555" }}>
-              {totalClaimed.toString()} / {totalDeposited.toString()} tokens claimed
-            </p>
+          <h2 style={{ margin: "0 0 16px", fontSize: 16, fontWeight: 700 }}>Airdrop Progress</h2>
+
+          {progressLoading && (
+            <p style={{ color: "#888", fontSize: 13, margin: 0 }}>Loading progress…</p>
+          )}
+
+          {!progressLoading && progress === null && (
+            <p style={{ color: "#888", fontSize: 13, margin: 0 }}>Could not load progress data.</p>
+          )}
+
+          {progress !== null && (
+            <>
+              {/* Progress bar */}
+              <div
+                role="progressbar"
+                aria-valuenow={claimedPct}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label={`${claimedPct.toFixed(1)}% of tokens claimed`}
+                style={{
+                  background: "#1a1a1a",
+                  borderRadius: 8,
+                  height: 18,
+                  overflow: "hidden",
+                  marginBottom: 10,
+                  border: "1px solid #333",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${Math.min(100, claimedPct)}%`,
+                    height: "100%",
+                    background: claimedPct >= 100 ? "#4caf50" : "#8ae4ff",
+                    borderRadius: 8,
+                    transition: "width 0.4s ease",
+                    minWidth: claimedPct > 0 ? 4 : 0,
+                  }}
+                />
+              </div>
+
+              {/* Labels */}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: 13,
+                  color: "#aaa",
+                }}
+              >
+                <span>
+                  <strong style={{ color: "#ededed" }}>
+                    {progress.totalClaimed.toLocaleString()}
+                  </strong>{" "}
+                  tokens claimed out of{" "}
+                  <strong style={{ color: "#ededed" }}>
+                    {progress.totalDeposited.toLocaleString()}
+                  </strong>{" "}
+                  total
+                </span>
+                <span style={{ color: "#888" }}>{claimedPct.toFixed(1)}%</span>
+              </div>
+            </>
           )}
         </div>
       )}
