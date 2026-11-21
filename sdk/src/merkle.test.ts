@@ -115,3 +115,36 @@ describe("buildMerkleTree", () => {
     }
   });
 });
+
+// ─── Snapshot / determinism ──────────────────────────────────────────────────
+
+/**
+ * Five-entry list with CONTRACT_A as the first address.
+ * The expected root is a golden constant computed once and recorded here.
+ * If buildMerkleTree or leafHash ever change their hashing logic, this test
+ * will fail, acting as a cross-language parity guard.
+ */
+const SNAPSHOT_ENTRIES = [
+  { address: "GBTL47RTFR5EKMZSXWOQU735WBK7LRPPDIDK3JTNTCZZ7NUBBRDTVSK2", amount: 1000n },
+  { address: "GBIRYNFBULFVEHPRNOZENOG6RZ4ZPTRDLR7HNMRKHV2QHISIDHOYV6ZN", amount: 2000n },
+  { address: "GCEEXCCX6TVKCYJ4MFIE3M2NJPVPGRSRPIHDDXR43XKNTNBADWOQWDYC", amount: 3000n },
+  { address: "GBMMY7FMUI4LRVCGXXUTKSFEAVC263AWXHUAS5CRMATPWQYXSFYXB3D7", amount: 4000n },
+  { address: "GABTU4L6RJ4QYUDOQGFXSI3SKVVDWHZBQRWO6WZ4FGPJQPKLYRYZUHQS", amount: 5000n },
+];
+
+// Golden root computed once from SNAPSHOT_ENTRIES — do not change unless the
+// hashing algorithm changes intentionally.
+const GOLDEN_ROOT = "f70f8619891cbb62a6b8101eaa581bc76305e8bd46ad58e2f7262e44e588ebec";
+
+describe("buildMerkleTree determinism", () => {
+  it("same input always produces the same root", () => {
+    const { root: root1 } = buildMerkleTree(SNAPSHOT_ENTRIES);
+    const { root: root2 } = buildMerkleTree(SNAPSHOT_ENTRIES);
+    expect(root1).toBe(root2);
+  });
+
+  it("root matches the golden snapshot", () => {
+    const { root } = buildMerkleTree(SNAPSHOT_ENTRIES);
+    expect(root).toBe(GOLDEN_ROOT);
+  });
+});
