@@ -237,6 +237,221 @@ export function createAirdropClient(config: NetworkConfig) {
     }
   }
 
+  /**
+   * Update the Merkle root stored in the contract (admin-only).
+   *
+   * Calls the contract's `update_merkle_root` function which replaces the
+   * distribution tree root and total amount. The admin keypair must sign.
+   *
+   * @param newRoot       - New 32-byte Merkle root as a hex string.
+   * @param totalAmount   - New total token amount for the updated tree.
+   * @param adminSecretKey - Stellar secret key of the airdrop admin (S...).
+   */
+  async function updateMerkleRoot(
+    newRoot: string,
+    totalAmount: bigint,
+    adminSecretKey: string
+  ): Promise<{ txHash: string }> {
+    const keypair = Keypair.fromSecret(adminSecretKey);
+    const sourceAccount = await server.getAccount(keypair.publicKey());
+
+    const rootBytes = Buffer.from(newRoot.replace(/^0x/, ""), "hex");
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(
+        contractInst.call(
+          "update_merkle_root",
+          xdr.ScVal.scvBytes(rootBytes),
+          nativeToScVal(totalAmount, { type: "i128" })
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simResult)) {
+      const contractCode = parseContractErrorCode(simResult.error);
+      if (contractCode !== null) {
+        throw new AirdropContractError(contractCode);
+      }
+      throw new RpcError(`Simulation failed: ${simResult.error}`);
+    }
+
+    const preparedTx = rpc.assembleTransaction(tx, simResult).build();
+    preparedTx.sign(keypair);
+
+    const sendResult = await server.sendTransaction(preparedTx);
+    if (sendResult.status === "ERROR") {
+      throw new RpcError(
+        `Transaction submission failed`,
+        sendResult.errorResult?.toXDR("base64")
+      );
+    }
+
+    const txHash = sendResult.hash;
+    const deadline = Date.now() + pollTimeoutMs;
+    while (true) {
+      await sleep(2000);
+      if (Date.now() >= deadline) {
+        throw new RpcError(
+          `Transaction confirmation timeout after ${pollTimeoutMs}ms: ${txHash}`
+        );
+      }
+      const poll = await server.getTransaction(txHash);
+      if (poll.status === "SUCCESS") {
+        return { txHash };
+      }
+      if (poll.status === "FAILED") {
+        throw new RpcError(`Transaction failed on-chain: ${txHash}`);
+      }
+    }
+  }
+
+  /**
+   * Claim tokens on behalf of multiple addresses in a single transaction
+   * (operator-pays pattern).
+   *
+   * @param entries - Array of { address, amount, proof } for each claimant.
+   * @param operatorSecretKey - Stellar secret key of the transaction fee payer.
+   */
+  async function batchClaim(
+    entries: ClaimProof[],
+    operatorSecretKey: string
+  ): Promise<{ txHash: string }> {
+    const keypair = Keypair.fromSecret(operatorSecretKey);
+    const sourceAccount = await server.getAccount(keypair.publicKey());
+
+    // Build the Vec<AirdropEntry> ScVal
+    const entriesScVal = xdr.ScVal.scvVec(
+      entries.map((e) =>
+        xdr.ScVal.scvMap([
+          new xdr.ScMapEntry({
+            key: xdr.ScVal.scvSymbol("claimant"),
+            val: new Address(e.address).toScVal(),
+          }),
+          new xdr.ScMapEntry({
+            key: xdr.ScVal.scvSymbol("amount"),
+            val: nativeToScVal(e.amount, { type: "i128" }),
+          }),
+        ])
+      )
+    );
+
+    // Build the Vec<Vec<BytesN<32>>> ScVal for proofs
+    const proofsScVal = xdr.ScVal.scvVec(
+      entries.map((e) =>
+        xdr.ScVal.scvVec(
+          e.proof.map((h) => xdr.ScVal.scvBytes(Buffer.from(h, "hex")))
+        )
+      )
+    );
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(contractInst.call("batch_claim", entriesScVal, proofsScVal))
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simResult)) {
+      const contractCode = parseContractErrorCode(simResult.error);
+      if (contractCode !== null) {
+        throw new AirdropContractError(contractCode);
+      }
+      throw new RpcError(`Simulation failed: ${simResult.error}`);
+    }
+
+    const preparedTx = rpc.assembleTransaction(tx, simResult).build();
+    preparedTx.sign(keypair);
+
+    const sendResult = await server.sendTransaction(preparedTx);
+    if (sendResult.status === "ERROR") {
+      throw new RpcError(
+        `Transaction submission failed`,
+        sendResult.errorResult?.toXDR("base64")
+      );
+    }
+
+    const txHash = sendResult.hash;
+    const deadline = Date.now() + pollTimeoutMs;
+    while (true) {
+      await sleep(2000);
+      if (Date.now() >= deadline) {
+        throw new RpcError(
+          `Transaction confirmation timeout after ${pollTimeoutMs}ms: ${txHash}`
+        );
+      }
+      const poll = await server.getTransaction(txHash);
+      if (poll.status === "SUCCESS") {
+        return { txHash };
+      }
+      if (poll.status === "FAILED") {
+        throw new RpcError(`Transaction failed on-chain: ${txHash}`);
+      }
+    }
+  }
+
+  /**
+   * Build an unsigned batch-claim transaction XDR for dry-run / fee estimation.
+   *
+   * Returns the base64-encoded assembled (but unsigned) transaction envelope.
+   */
+  async function buildBatchClaimTransaction(
+    entries: ClaimProof[],
+    operatorAddress: string
+  ): Promise<{ xdr: string; fee: string }> {
+    const sourceAccount = await server.getAccount(operatorAddress);
+
+    const entriesScVal = xdr.ScVal.scvVec(
+      entries.map((e) =>
+        xdr.ScVal.scvMap([
+          new xdr.ScMapEntry({
+            key: xdr.ScVal.scvSymbol("claimant"),
+            val: new Address(e.address).toScVal(),
+          }),
+          new xdr.ScMapEntry({
+            key: xdr.ScVal.scvSymbol("amount"),
+            val: nativeToScVal(e.amount, { type: "i128" }),
+          }),
+        ])
+      )
+    );
+
+    const proofsScVal = xdr.ScVal.scvVec(
+      entries.map((e) =>
+        xdr.ScVal.scvVec(
+          e.proof.map((h) => xdr.ScVal.scvBytes(Buffer.from(h, "hex")))
+        )
+      )
+    );
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(contractInst.call("batch_claim", entriesScVal, proofsScVal))
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simResult)) {
+      const contractCode = parseContractErrorCode(simResult.error);
+      if (contractCode !== null) {
+        throw new AirdropContractError(contractCode);
+      }
+      throw new RpcError(`Simulation failed: ${simResult.error}`);
+    }
+
+    const assembled = rpc.assembleTransaction(tx, simResult).build();
+    const fee = (simResult as rpc.Api.SimulateTransactionSuccessResponse).minResourceFee ?? BASE_FEE;
+    return { xdr: assembled.toXDR(), fee: fee.toString() };
+  }
+
   async function simulateRead(operation: xdr.Operation): Promise<xdr.ScVal> {
     const dummy = Keypair.random();
     const account = new Account(dummy.publicKey(), "0");
@@ -259,7 +474,7 @@ export function createAirdropClient(config: NetworkConfig) {
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  return { isClaimed, isActive, merkleRoot, totalDeposited, expiration, claim, buildClaimTransaction, submitSignedTransaction };
+  return { isClaimed, isActive, merkleRoot, totalDeposited, expiration, claim, buildClaimTransaction, submitSignedTransaction, updateMerkleRoot, batchClaim, buildBatchClaimTransaction };
 }
 
 /**
