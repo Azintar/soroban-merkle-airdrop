@@ -65,6 +65,8 @@ jobs:
             --expiration ${{ inputs.expiration }}
       - name: Print result
         run: |
-          echo "Contract ID: ${{ steps.deploy.outputs.contract_id }}"
-          echo "WASM hash:   ${{ steps.upload.outputs.wasm_hash }}"
-          echo "Network:     ${{ inputs.network }}"
+          echo "| Field        | Value |"
+          echo "| ------------ | ----- |"
+          echo "| Contract ID  | ${{ steps.deploy.outputs.contract_id }} |"
+          echo "| WASM hash    | ${{ steps.upload.outputs.wasm_hash }} |"
+          echo "| Network      | ${{ inputs.network }} |"
