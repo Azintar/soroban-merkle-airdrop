@@ -64,6 +64,8 @@ export type AirdropClient = ReturnType<typeof createAirdropClient>;
  * ```
  */
 export function createAirdropClient(config: NetworkConfig) {
+  const maxRetries = config.maxRetries ?? 3;
+  const defaultBackoffMs = config._backoffMs ?? 1000;
   const server = new rpc.Server(config.rpcUrl, { allowHttp: false });
   const contractInst = new Contract(config.contractId);
   const pollTimeoutMs = config.pollTimeoutMs ?? 60_000;
@@ -514,7 +516,7 @@ export function createAirdropClient(config: NetworkConfig) {
       .setTimeout(30)
       .build();
 
-    const simResult = await server.simulateTransaction(tx);
+    const simResult = await withRetry(() => server.simulateTransaction(tx));
     if (rpc.Api.isSimulationError(simResult)) {
       const contractCode = parseContractErrorCode(simResult.error);
       if (contractCode !== null) {
@@ -526,7 +528,7 @@ export function createAirdropClient(config: NetworkConfig) {
     const preparedTx = rpc.assembleTransaction(tx, simResult).build();
     preparedTx.sign(operatorKeypair);
 
-    const sendResult = await server.sendTransaction(preparedTx);
+    const sendResult = await withRetry(() => server.sendTransaction(preparedTx));
     if (sendResult.status === "ERROR") {
       throw new RpcError(
         `Transaction submission failed`,
@@ -607,7 +609,7 @@ export function createAirdropClient(config: NetworkConfig) {
       .setTimeout(30)
       .build();
 
-    const simResult = await server.simulateTransaction(tx);
+    const simResult = await withRetry(() => server.simulateTransaction(tx));
     if (rpc.Api.isSimulationError(simResult)) {
       const contractCode = parseContractErrorCode(simResult.error);
       if (contractCode !== null) {
@@ -645,7 +647,7 @@ export function createAirdropClient(config: NetworkConfig) {
     claimProof: ClaimProof
   ): Promise<ClaimResult> {
     const txEnvelope = TransactionBuilder.fromXDR(signedXdr, config.networkPassphrase) as Transaction;
-    const sendResult = await server.sendTransaction(txEnvelope);
+    const sendResult = await withRetry(() => server.sendTransaction(txEnvelope));
     if (sendResult.status === "ERROR") {
       throw new RpcError(
         `Transaction submission failed`,
@@ -719,8 +721,10 @@ export function createAirdropClient(config: NetworkConfig) {
       .setTimeout(30)
       .build();
 
-    const simResult = await server.simulateTransaction(tx);
+    const simResult = await withRetry(() => server.simulateTransaction(tx));
     if (rpc.Api.isSimulationError(simResult)) {
+      const contractCode = parseContractErrorCode(simResult.error);
+      if (contractCode !== null) throw new AirdropContractError(contractCode);
       throw new RpcError(`Read simulation failed: ${simResult.error}`);
     }
     return (simResult as rpc.Api.SimulateTransactionSuccessResponse).result!.retval;
