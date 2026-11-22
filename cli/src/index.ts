@@ -4,7 +4,9 @@ import { Command } from "commander";
 import { generateCommand } from "./commands/generate.js";
 import { claimCommand } from "./commands/claim.js";
 import { statusCommand } from "./commands/status.js";
+import { reclaimCommand } from "./commands/reclaim.js";
 import { deployCommand } from "./commands/deploy.js";
+import { pauseCommand, unpauseCommand } from "./commands/pause.js";
 
 const program = new Command();
 
@@ -21,7 +23,10 @@ program
 program.addCommand(generateCommand);
 program.addCommand(claimCommand);
 program.addCommand(statusCommand);
+program.addCommand(reclaimCommand);
 program.addCommand(deployCommand);
+program.addCommand(pauseCommand);
+program.addCommand(unpauseCommand);
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error((err as Error).message);
