@@ -51,3 +51,18 @@ export interface ClaimResult {
   address: string;
   amount: bigint;
 }
+
+/**
+ * Format a raw token amount (in stroops) as a human-readable decimal string.
+ *
+ * @param amount - Raw amount in base units (stroops).
+ * @param decimals - Number of decimal places (default 7 for XLM/Soroban tokens).
+ * @returns Formatted string, e.g. "12.3456789".
+ */
+export function formatAmount(amount: bigint, decimals = 7): string {
+  const factor = BigInt(10) ** BigInt(decimals);
+  const whole = amount / factor;
+  const frac = amount % factor;
+  const fracStr = frac.toString().padStart(decimals, "0").replace(/0+$/, "");
+  return fracStr.length > 0 ? `${whole}.${fracStr}` : `${whole}`;
+}
