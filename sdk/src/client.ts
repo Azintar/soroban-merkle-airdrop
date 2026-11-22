@@ -25,6 +25,21 @@ import { AirdropContractError, RpcError } from "./types.js";
 import { verifyProof } from "./merkle.js";
 
 /**
+ * The public API surface returned by {@link createAirdropClient}.
+ *
+ * Consumers can use this type to annotate variables or parameters that hold a
+ * client instance:
+ *
+ * @example
+ * ```ts
+ * import type { AirdropClient } from '@soroban-merkle-airdrop/sdk';
+ *
+ * function displayStatus(client: AirdropClient) { ... }
+ * ```
+ */
+export type AirdropClient = ReturnType<typeof createAirdropClient>;
+
+/**
  * Create a typed client for an on-chain soroban-merkle-airdrop contract.
  *
  * All RPC calls are made against the `rpcUrl` and `networkPassphrase` specified
@@ -133,6 +148,69 @@ export function createAirdropClient(config: NetworkConfig) {
   async function claimedCount(): Promise<number> {
     const result = await simulateRead(contractInst.call("claimed_count"));
     return scValToNative(result) as number;
+  }
+
+  /**
+   * Fetch the total tokens distributed through successful claims.
+   *
+   * This metric starts at 0 when the airdrop is initialised and grows
+   * by the claimed amount with every successful `claim`, `claim_for`, or
+   * `batch_claim` entry. Use it alongside {@link totalDeposited} to
+   * calculate a progress ratio for dashboards.
+   *
+   * @returns Total claimed amount in base units (stroops for XLM-based tokens).
+   *
+   * @example
+   * ```ts
+   * const claimed = await client.totalClaimed();
+   * const total = await client.totalDeposited();
+   * const pct = Number(claimed * 100n / total);
+   * console.log(`${pct}% of tokens claimed`);
+   * ```
+   */
+  async function totalClaimed(): Promise<bigint> {
+    const result = await simulateRead(contractInst.call("total_claimed"));
+    return BigInt(scValToNative(result) as number);
+  }
+
+  /**
+   * Fetch the total tokens claimed so far from the airdrop contract.
+   *
+   * @returns Total claimed amount in base units, or `null` if the contract
+   *   has not been initialised or does not expose this value.
+   *
+   * @example
+   * ```ts
+   * const claimed = await client.totalClaimed();
+   * console.log("Total claimed:", claimed?.toString());
+   * ```
+   */
+  async function totalClaimed(): Promise<bigint | null> {
+    try {
+      const result = await simulateRead(contractInst.call("total_claimed"));
+      const native = scValToNative(result);
+      if (native === null || native === undefined) return null;
+      return BigInt(native as number);
+    } catch {
+      // Contract may not expose total_claimed; treat as best-effort.
+      return null;
+    }
+  }
+
+  /**
+   * Fetch the total tokens claimed so far from the airdrop contract.
+   *
+   * @returns Total claimed amount in base units.
+   *
+   * @example
+   * ```ts
+   * const claimed = await client.totalClaimed();
+   * console.log("Claimed so far:", claimed.toString());
+   * ```
+   */
+  async function totalClaimed(): Promise<bigint> {
+    const result = await simulateRead(contractInst.call("total_claimed"));
+    return BigInt(scValToNative(result) as number);
   }
 
   /**
@@ -685,10 +763,11 @@ export function createAirdropClient(config: NetworkConfig) {
     isActive,
     merkleRoot,
     totalDeposited,
+    totalClaimed,
     expiration,
     remainingBalance,
     tokenDecimals,
-    simulateClaim,
+    claimedCount,
     claim,
     claimFor,
     buildClaimTransaction,

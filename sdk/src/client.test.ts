@@ -22,12 +22,14 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
   const mockGetAccount = vi.fn();
   const mockSimulateTransaction = vi.fn();
 
-  const MockServer = vi.fn().mockImplementation(() => ({
-    sendTransaction: mockSendTransaction,
-    getTransaction: mockGetTransaction,
-    getAccount: mockGetAccount,
-    simulateTransaction: mockSimulateTransaction,
-  }));
+  const MockServer = vi.fn().mockImplementation(function (this: unknown) {
+    Object.assign(this as object, {
+      sendTransaction: mockSendTransaction,
+      getTransaction: mockGetTransaction,
+      getAccount: mockGetAccount,
+      simulateTransaction: mockSimulateTransaction,
+    });
+  });
 
   return {
     ...actual,
@@ -37,18 +39,23 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
       assembleTransaction: vi.fn().mockReturnValue({ build: vi.fn().mockReturnValue({ toXDR: vi.fn(), sign: vi.fn() }) }),
       Api: actual.rpc?.Api ?? {},
     },
-    Contract: vi.fn().mockImplementation(() => ({
-      call: vi.fn().mockReturnValue({}),
-    })),
-    Address: vi.fn().mockImplementation(() => ({
-      toScVal: vi.fn().mockReturnValue({}),
-    })),
-    TransactionBuilder: vi.fn().mockImplementation(() => ({
-      addOperation: vi.fn().mockReturnThis(),
-      setTimeout: vi.fn().mockReturnThis(),
-      build: vi.fn().mockReturnValue({ sign: vi.fn(), toXDR: vi.fn() }),
-    })),
-    Account: vi.fn().mockImplementation(() => ({})),
+    Contract: vi.fn().mockImplementation(function (this: unknown) {
+      Object.assign(this as object, {
+        call: vi.fn().mockReturnValue({}),
+      });
+    }),
+    TransactionBuilder: vi.fn().mockImplementation(function (this: unknown) {
+      const self = {
+        addOperation: vi.fn().mockReturnThis(),
+        setTimeout: vi.fn().mockReturnThis(),
+        build: vi.fn().mockReturnValue({ sign: vi.fn(), toXDR: vi.fn() }),
+      };
+      // mockReturnThis needs the methods on `this`
+      Object.assign(this as object, self);
+    }),
+    Account: vi.fn().mockImplementation(function (this: unknown) {
+      Object.assign(this as object, {});
+    }),
     Keypair: {
       ...actual.Keypair,
       fromSecret: vi.fn().mockReturnValue({
@@ -68,7 +75,7 @@ async function getMockServer() {
   const sdk = await import("@stellar/stellar-sdk");
   // The Server constructor is mocked — grab the most recently created instance.
   const MockServer = sdk.rpc.Server as unknown as ReturnType<typeof vi.fn>;
-  return MockServer.mock.results[MockServer.mock.results.length - 1]?.value as {
+  return MockServer.mock.instances[MockServer.mock.instances.length - 1] as {
     sendTransaction: ReturnType<typeof vi.fn>;
     getTransaction: ReturnType<typeof vi.fn>;
     getAccount: ReturnType<typeof vi.fn>;
@@ -178,7 +185,35 @@ describe("createAirdropClient — polling timeout (Issue #15)", () => {
   }, 15_000);
 });
 
-// ─── Issue #40: expiration() method ────────────────────────────────────────
+// ─── Issue #487: claimedCount() in public API ───────────────────────────────
+
+describe("createAirdropClient — claimedCount() (Issue #487)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("claimedCount is present on the client object", () => {
+    const client = createAirdropClient(BASE_CONFIG);
+    expect(typeof client.claimedCount).toBe("function");
+  });
+
+  it("claimedCount() returns a number when the contract responds", async () => {
+    const { xdr } = await import("@stellar/stellar-sdk");
+    const client = createAirdropClient(BASE_CONFIG);
+    const server = await getMockServer();
+
+    // The contract returns a u32 count — simulate that with scvU32.
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: xdr.ScVal.scvU32(42) },
+      transactionData: {},
+      minResourceFee: "100",
+    });
+
+    const count = await client.claimedCount();
+    expect(typeof count).toBe("number");
+    expect(count).toBe(42);
+  });
+});
 
 describe("createAirdropClient — expiration() (Issue #40)", () => {
   beforeEach(() => {
