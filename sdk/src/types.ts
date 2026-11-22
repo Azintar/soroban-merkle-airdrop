@@ -28,6 +28,24 @@ export interface NetworkConfig {
   rpcUrl: string;
   networkPassphrase: string;
   contractId: string;
+  /** Maximum RPC retry attempts for transient failures (default 3). */
+  maxRetries?: number;
+}
+
+/** All instance-level state returned by `contract_info()`. */
+export interface ContractInfo {
+  /** Current Merkle root as a 64-char hex string, or null if not set. */
+  merkleRoot: string | null;
+  /** SEP-41 token contract address, or null if not initialised. */
+  token: string | null;
+  /** Admin address, or null if not initialised. */
+  admin: string | null;
+  /** Total tokens deposited at initialisation (base units). */
+  totalDeposited: bigint;
+  /** Whether the airdrop is currently active. */
+  active: boolean;
+  /** Unix timestamp (seconds) after which reclaim is permitted, or null. */
+  expiration: bigint | null;
 }
 
 /** Well-known network presets. */

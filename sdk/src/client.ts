@@ -16,7 +16,7 @@ import {
   Account,
   Networks,
 } from "@stellar/stellar-sdk";
-import type { ClaimProof, ClaimResult, NetworkConfig } from "./types.js";
+import type { ClaimProof, ClaimResult, NetworkConfig, ContractInfo } from "./types.js";
 import { AirdropContractError, RpcError } from "./types.js";
 
 export function createAirdropClient(config: NetworkConfig) {
@@ -213,6 +213,53 @@ export function createAirdropClient(config: NetworkConfig) {
     }
   }
 
+  /**
+   * Fetch all instance-level contract state in one logical call.
+   *
+   * Runs the six individual read simulations in parallel and assembles them
+   * into a single {@link ContractInfo} object. Returns `null` if the contract
+   * has not been initialised yet (merkle root absent).
+   */
+  async function contractInfo(): Promise<ContractInfo | null> {
+    const [
+      rootResult,
+      tokenResult,
+      adminResult,
+      totalResult,
+      activeResult,
+      expirationResult,
+    ] = await Promise.all([
+      simulateRead(contractInst.call("merkle_root")),
+      simulateRead(contractInst.call("token")),
+      simulateRead(contractInst.call("admin")),
+      simulateRead(contractInst.call("total_deposited")),
+      simulateRead(contractInst.call("is_active")),
+      simulateRead(contractInst.call("expiration")),
+    ]);
+
+    // merkle_root returns Option<BytesN<32>> — if the Option is None the
+    // contract has not been initialised.
+    const rootNative = scValToNative(rootResult);
+    if (rootNative === null || rootNative === undefined) return null;
+
+    const merkleRootHex = Buffer.from(rootNative as Uint8Array).toString("hex");
+
+    const tokenNative      = scValToNative(tokenResult);
+    const adminNative      = scValToNative(adminResult);
+    const totalNative      = scValToNative(totalResult);
+    const activeNative     = scValToNative(activeResult);
+    const expirationNative = scValToNative(expirationResult);
+
+    return {
+      merkleRoot:     merkleRootHex,
+      token:          tokenNative    != null ? String(tokenNative)    : null,
+      admin:          adminNative    != null ? String(adminNative)    : null,
+      totalDeposited: BigInt(totalNative as number | bigint ?? 0),
+      active:         Boolean(activeNative),
+      expiration:     expirationNative != null ? BigInt(expirationNative as number | bigint) : null,
+    };
+  }
+
   async function simulateRead(operation: xdr.Operation): Promise<xdr.ScVal> {
     const dummy = Keypair.random();
     const account = new Account(dummy.publicKey(), "0");
@@ -235,7 +282,7 @@ export function createAirdropClient(config: NetworkConfig) {
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  return { isClaimed, isActive, merkleRoot, totalDeposited, claim, buildClaimTransaction, submitSignedTransaction };
+  return { isClaimed, isActive, merkleRoot, totalDeposited, claim, buildClaimTransaction, submitSignedTransaction, contractInfo };
 }
 
 /**
