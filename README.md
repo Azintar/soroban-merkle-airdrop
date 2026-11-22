@@ -183,10 +183,11 @@ cd web && pnpm install && pnpm dev
 merkle-airdrop <command> [options]
 
 Commands:
-  generate   Build Merkle tree from CSV → JSON (run off-chain by organiser)
-  claim      Submit claim transaction for an address
-  status     Query on-chain contract status
-  deploy     Deployment guide (uses Stellar CLI)
+  generate        Build Merkle tree from CSV → JSON (run off-chain by organiser)
+  claim           Submit claim transaction for an address
+  status          Query on-chain contract status
+  deploy          Deployment guide (uses Stellar CLI)
+  transfer-admin  Transfer admin ownership to a new address
 
 Global options:
   -n, --network <network>      testnet | mainnet  [default: testnet]

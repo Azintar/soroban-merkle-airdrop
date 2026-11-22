@@ -1172,3 +1172,33 @@ fn hex_to_array_32(hex: &str) -> [u8; 32] {
     }
     out
 }
+
+// ─── Issue #468: initialize event test ─────────────────────────────────────
+
+/// The initialize() function must emit an ("init", admin) event with
+/// data (merkle_root, total_amount). This matters for indexers that
+/// watch for new airdrop deployments.
+#[test]
+fn test_initialize_emits_init_event() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &claimant, 1000, &admin, 500);
+    let total_amount: i128 = 1500;
+
+    mint(&env, &token, &admin, &admin, total_amount);
+    client.initialize(&admin, &token, &root, &total_amount, &DEFAULT_EXPIRATION);
+
+    // The initialize call is the most recent invocation, so contract_events
+    // returns the events it published.
+    assert_eq!(
+        contract_events(&env, &contract_id),
+        expected_events(
+            &env,
+            &contract_id,
+            &[((symbol_short!("init"), admin.clone()), (root.clone(), total_amount).into_val(&env))],
+        ),
+        "initialize() must emit ('init', admin) → (merkle_root, total_amount)"
+    );
+}

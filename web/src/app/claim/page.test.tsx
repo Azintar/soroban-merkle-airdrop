@@ -43,6 +43,7 @@ vi.mock("@soroban-merkle-airdrop/sdk", () => ({
     isClaimed: mockIsClaimedFn,
     buildClaimTransaction: mockBuildClaimTransactionFn,
     submitSignedTransaction: mockSubmitSignedTransactionFn,
+    expiration: vi.fn().mockResolvedValue(null),
   })),
   verifyProof: mockVerifyProof,
   NETWORKS: {
@@ -140,7 +141,7 @@ describe("ClaimPage — wallet connection", () => {
     renderWithNetwork(<ClaimPage />);
     await userEvent.click(screen.getByRole("button", { name: /connect wallet/i }));
     await waitFor(() => {
-      expect(screen.getByRole("alert")).toHaveTextContent(/freighter wallet is not installed/i);
+      expect(screen.getByRole("alert")).toHaveTextContent(/freighter is not installed/i);
     });
   });
 
@@ -150,6 +151,40 @@ describe("ClaimPage — wallet connection", () => {
     await userEvent.click(screen.getByRole("button", { name: /connect wallet/i }));
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent(/user rejected/i);
+    });
+  });
+});
+
+describe("ClaimPage — Freighter install link (#522)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIsConnected.mockResolvedValue(false);
+  });
+
+  it("renders 'Install Freighter' link when Freighter is not installed", async () => {
+    renderWithNetwork(<ClaimPage />);
+    await userEvent.click(screen.getByRole("button", { name: /connect wallet/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: /install freighter/i })).toBeInTheDocument();
+    });
+  });
+
+  it("Install Freighter link has href='https://freighter.app'", async () => {
+    renderWithNetwork(<ClaimPage />);
+    await userEvent.click(screen.getByRole("button", { name: /connect wallet/i }));
+    await waitFor(() => {
+      const link = screen.getByRole("link", { name: /install freighter/i });
+      expect(link).toHaveAttribute("href", "https://freighter.app");
+    });
+  });
+
+  it("Install Freighter link has target='_blank' and rel='noopener noreferrer'", async () => {
+    renderWithNetwork(<ClaimPage />);
+    await userEvent.click(screen.getByRole("button", { name: /connect wallet/i }));
+    await waitFor(() => {
+      const link = screen.getByRole("link", { name: /install freighter/i });
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link).toHaveAttribute("rel", "noopener noreferrer");
     });
   });
 });
@@ -235,7 +270,7 @@ describe("ClaimPage — successful claim flow", () => {
     });
   });
 
-  it("shows success message and Stellar Expert link", async () => {
+  it("shows success card with Stellar Expert link after claim", async () => {
     renderWithNetwork(<ClaimPage />);
     await connectWallet();
     await pasteTree();
@@ -246,11 +281,15 @@ describe("ClaimPage — successful claim flow", () => {
     await userEvent.click(screen.getByRole("button", { name: /claim tokens/i }));
 
     await waitFor(() =>
-      expect(screen.getByTestId("status-message")).toHaveTextContent(/successfully claimed 1000/i)
+      expect(screen.getByTestId("success-card")).toBeInTheDocument()
     );
 
-    const link = screen.getByRole("link", { name: /view transaction/i });
+    expect(screen.getByText(/claimed successfully/i)).toBeInTheDocument();
+
+    const link = screen.getByTestId("stellar-expert-link");
     expect(link).toHaveAttribute("href", expect.stringContaining("abc123txhash"));
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
   });
 
   it("calls buildClaimTransaction, signTransaction, submitSignedTransaction in order", async () => {
@@ -268,8 +307,68 @@ describe("ClaimPage — successful claim flow", () => {
   });
 });
 
-describe("ClaimPage — claim error flow", () => {
+describe("ClaimPage — success card (#523)", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
+    mockIsConnected.mockResolvedValue(true);
+    mockGetPublicKey.mockResolvedValue(ELIGIBLE_ADDRESS);
+    mockIsClaimedFn.mockResolvedValue(false);
+    mockVerifyProof.mockReturnValue(true);
+    mockBuildClaimTransactionFn.mockResolvedValue("unsigned-xdr");
+    mockSignTransaction.mockResolvedValue("signed-xdr");
+    mockSubmitSignedTransactionFn.mockResolvedValue({
+      txHash: "abc123txhash",
+      amount: 1000n,
+    });
+  });
+
+  it("shows the success card (data-testid='success-card') on status=success", async () => {
+    renderWithNetwork(<ClaimPage />);
+    await connectWallet();
+    await pasteTree();
+
+    await userEvent.click(screen.getByRole("button", { name: /check eligibility/i }));
+    await waitFor(() => screen.getByRole("button", { name: /claim tokens/i }));
+    await userEvent.click(screen.getByRole("button", { name: /claim tokens/i }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("success-card")).toBeInTheDocument()
+    );
+  });
+
+  it("success card Stellar Expert link uses correct network in URL", async () => {
+    renderWithNetwork(<ClaimPage />);
+    await connectWallet();
+    await pasteTree();
+
+    await userEvent.click(screen.getByRole("button", { name: /check eligibility/i }));
+    await waitFor(() => screen.getByRole("button", { name: /claim tokens/i }));
+    await userEvent.click(screen.getByRole("button", { name: /claim tokens/i }));
+
+    await waitFor(() => screen.getByTestId("success-card"));
+
+    const link = screen.getByTestId("stellar-expert-link");
+    // renderWithNetwork uses testnet by default
+    expect(link).toHaveAttribute("href", expect.stringContaining("/testnet/"));
+    expect(link).toHaveAttribute("href", expect.stringContaining("abc123txhash"));
+  });
+
+  it("does not show generic status-message div when status=success", async () => {
+    renderWithNetwork(<ClaimPage />);
+    await connectWallet();
+    await pasteTree();
+
+    await userEvent.click(screen.getByRole("button", { name: /check eligibility/i }));
+    await waitFor(() => screen.getByRole("button", { name: /claim tokens/i }));
+    await userEvent.click(screen.getByRole("button", { name: /claim tokens/i }));
+
+    await waitFor(() => screen.getByTestId("success-card"));
+
+    expect(screen.queryByTestId("status-message")).not.toBeInTheDocument();
+  });
+});
+
+describe("ClaimPage — claim error flow", () => {  beforeEach(() => {
     vi.clearAllMocks();
     mockIsConnected.mockResolvedValue(true);
     mockGetPublicKey.mockResolvedValue(ELIGIBLE_ADDRESS);

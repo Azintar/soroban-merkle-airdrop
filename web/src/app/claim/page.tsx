@@ -155,10 +155,7 @@ export default function ClaimPage() {
     try {
       const connected = await isConnected();
       if (!connected) {
-        setWalletError(
-          "Freighter wallet is not installed. " +
-            "Install it from https://freighter.app and refresh the page."
-        );
+        setWalletError("Freighter wallet is not installed.");
         return;
       }
       const publicKey = await getPublicKey();
@@ -452,7 +449,22 @@ export default function ClaimPage() {
                   fontSize: 13,
                 }}
               >
-                {walletError}
+                {walletError.includes("not installed") ? (
+                  <>
+                    Freighter is not installed.{" "}
+                    <a
+                      href="https://freighter.app"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: "#ff6b6b", textDecoration: "underline" }}
+                    >
+                      Install Freighter
+                    </a>{" "}
+                    and refresh the page.
+                  </>
+                ) : (
+                  walletError
+                )}
               </div>
             )}
           </div>
@@ -634,7 +646,7 @@ export default function ClaimPage() {
         </button>
 
         {/* ── Status message ── */}
-        {status !== "idle" && message && (
+        {status !== "idle" && status !== "success" && message && (
           <div
             role="status"
             aria-live="polite"
@@ -649,6 +661,66 @@ export default function ClaimPage() {
             }}
           >
             {message}
+          </div>
+        )}
+
+        {/* ── Success card (#523) ── */}
+        {status === "success" && (
+          <div
+            data-testid="success-card"
+            role="status"
+            aria-live="polite"
+            style={{
+              padding: "24px",
+              borderRadius: 12,
+              background: "#0a1a0a",
+              border: "1px solid #4caf50",
+              color: "#ededed",
+              fontSize: 14,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 12,
+              textAlign: "center",
+            }}
+          >
+            <span style={{ fontSize: 48 }} aria-hidden="true">✓</span>
+            <h2 style={{ margin: 0, fontSize: 20, color: "#4caf50" }}>Claimed successfully!</h2>
+            <p style={{ margin: 0, color: "#aaa" }}>{message}</p>
+            {txHash && (
+              <a
+                href={`https://stellar.expert/explorer/${network}/tx/${txHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: "#8ae4ff", fontSize: 13, wordBreak: "break-all" }}
+                data-testid="stellar-expert-link"
+              >
+                View transaction on Stellar Expert →
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  navigator.clipboard.writeText(
+                    `https://stellar.expert/explorer/${network}/tx/${txHash}`
+                  );
+                } catch {
+                  // clipboard not available in all contexts
+                }
+              }}
+              style={{
+                background: "transparent",
+                border: "1px solid #4caf50",
+                color: "#4caf50",
+                borderRadius: 6,
+                padding: "6px 14px",
+                cursor: "pointer",
+                fontSize: 13,
+              }}
+            >
+              Copy link
+            </button>
           </div>
         )}
 
@@ -675,19 +747,7 @@ export default function ClaimPage() {
           </button>
         )}
 
-        {/* ── Success link ── */}
-        {status === "success" && txHash && (
-          <div style={{ marginTop: 8 }}>
-            <a
-              href={`https://stellar.expert/explorer/${network}/tx/${txHash}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ color: "#8ae4ff", fontSize: 13 }}
-            >
-              View transaction on Stellar Expert →
-            </a>
-          </div>
-        )}
+
       </div>
     </div>
   );
