@@ -236,10 +236,7 @@ export default function ClaimPage() {
     try {
       const connected = await isConnected();
       if (!connected) {
-        setWalletError(
-          "Freighter wallet is not installed. " +
-            "Install it from https://freighter.app and refresh the page."
-        );
+        setWalletError("Freighter wallet is not installed.");
         return;
       }
       const publicKey = await getPublicKey();
@@ -767,7 +764,22 @@ export default function ClaimPage() {
                   fontSize: 13,
                 }}
               >
-                {walletError}
+                {walletError.includes("not installed") ? (
+                  <>
+                    Freighter is not installed.{" "}
+                    <a
+                      href="https://freighter.app"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: "#ff6b6b", textDecoration: "underline" }}
+                    >
+                      Install Freighter
+                    </a>{" "}
+                    and refresh the page.
+                  </>
+                ) : (
+                  walletError
+                )}
               </div>
             )}
           </div>
@@ -966,7 +978,7 @@ export default function ClaimPage() {
         </button>
 
         {/* ── Status message ── */}
-        {status !== "idle" && message && (
+        {status !== "idle" && status !== "success" && message && (
           <div
             role="status"
             aria-live="polite"
