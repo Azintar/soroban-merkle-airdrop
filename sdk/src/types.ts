@@ -168,6 +168,27 @@ export interface MerkleTreeFile {
   >;
 }
 
+// ─── Simulate claim result ───────────────────────────────────────────────────
+
+/**
+ * Returned by {@link createAirdropClient.simulateClaim}.
+ *
+ * Contains the estimated fee (in stroops) and optional Soroban resource
+ * consumption details for a claim transaction, without actually submitting it.
+ */
+export interface SimulateClaimResult {
+  /** Estimated total fee in stroops (base fee + Soroban resource fee). */
+  fee: string;
+  /** Soroban resource consumption from the simulation. May be empty if unavailable. */
+  resources: {
+    instructions?: number;
+    readBytes?: number;
+    writeBytes?: number;
+    readEntries?: number;
+    writeEntries?: number;
+  };
+}
+
 // ─── Claim result ────────────────────────────────────────────────────────────
 
 /**
