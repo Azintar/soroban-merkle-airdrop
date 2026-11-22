@@ -4,11 +4,17 @@ import { vi } from "vitest";
 export const mockIsClaimedFn = vi.fn<() => Promise<boolean>>();
 export const mockBuildClaimTransactionFn = vi.fn<() => Promise<string>>();
 export const mockSubmitSignedTransactionFn = vi.fn<() => Promise<{ txHash: string; amount: bigint }>>();
+export const mockTotalDepositedFn = vi.fn<() => Promise<bigint>>().mockResolvedValue(0n);
+export const mockTotalClaimedFn = vi.fn<() => Promise<bigint>>().mockResolvedValue(0n);
+export const mockExpirationFn = vi.fn<() => Promise<bigint | null>>().mockResolvedValue(null);
 
 export const mockCreateAirdropClient = vi.fn(() => ({
   isClaimed: mockIsClaimedFn,
   buildClaimTransaction: mockBuildClaimTransactionFn,
   submitSignedTransaction: mockSubmitSignedTransactionFn,
+  totalDeposited: mockTotalDepositedFn,
+  totalClaimed: mockTotalClaimedFn,
+  expiration: mockExpirationFn,
 }));
 
 export const mockVerifyProof = vi.fn<() => boolean>().mockReturnValue(true);

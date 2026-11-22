@@ -16,10 +16,11 @@
  */
 
 // ─── Merkle helpers ──────────────────────────────────────────────────────────
-export { buildMerkleTree, leafHash, hashPair, verifyProof } from "./merkle.js";
+export { buildMerkleTree, leafHash, hashPair, verifyProof, isAddressInTree } from "./merkle.js";
 
 // ─── Contract client ─────────────────────────────────────────────────────────
 export { createAirdropClient } from "./client.js";
+export type { AirdropClient } from "./client.js";
 
 // ─── Fetch utility ───────────────────────────────────────────────────────────
 export { fetchMerkleTree, validateMerkleTreeFile } from "./fetch.js";
@@ -32,5 +33,11 @@ export type {
   MerkleTreeFile,
   NetworkConfig,
   ClaimResult,
+  SimulateClaimResult,
+  InitEvent,
+  ClaimedEvent,
+  ReclaimedEvent,
+  PausedEvent,
+  AirdropEvent,
 } from "./types.js";
-export { NETWORKS } from "./types.js";
+export { NETWORKS, AirdropError, AirdropContractError, RpcError } from "./types.js";
