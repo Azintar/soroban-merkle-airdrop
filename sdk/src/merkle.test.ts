@@ -601,3 +601,47 @@ describe("Issue #31 — property-based tests (fast-check)", () => {
     }
   );
 });
+
+// ─── Issue #483: buildMerkleTree at production scale (1000 entries) ────────
+//
+// The SDK is used in production with four-digit recipient lists, but the
+// property tests only exercise small trees. This block builds a 1000-entry
+// tree and verifies EVERY proof against the root, plus a wall-clock
+// performance guard so a silent algorithmic regression (e.g. an accidental
+// O(n^2) proof build) fails the suite.
+describe("buildMerkleTree — 1000 entries", () => {
+  // Deterministic synthetic data: unique strkey-shaped addresses.
+  const entries = Array.from({ length: 1000 }, (_, i) => ({
+    address: "G" + i.toString().padStart(55, "A"),
+    amount: BigInt(i + 1) * 100n,
+  }));
+
+  it("builds the tree for 1000 entries in under 2 seconds", () => {
+    const start = Date.now();
+    const { root, proofs } = buildMerkleTree(entries);
+    const elapsed = Date.now() - start;
+
+    expect(root).toMatch(/^[0-9a-f]{64}$/);
+    expect(proofs.size).toBe(1000);
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  it("root is a 64-character lowercase hex string", () => {
+    const { root } = buildMerkleTree(entries);
+    expect(root).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("all 1000 proofs verify against the root", () => {
+    const { root, proofs } = buildMerkleTree(entries);
+
+    let verified = 0;
+    for (const entry of entries) {
+      const p = proofs.get(entry.address);
+      expect(p).toBeDefined();
+      if (verifyProof(root, entry.address, entry.amount, p!.proof)) {
+        verified++;
+      }
+    }
+    expect(verified).toBe(1000);
+  }, 5000);
+});
