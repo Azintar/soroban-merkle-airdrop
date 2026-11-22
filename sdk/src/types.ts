@@ -28,6 +28,14 @@ export interface NetworkConfig {
   rpcUrl: string;
   networkPassphrase: string;
   contractId: string;
+  /** Maximum RPC retry attempts for transient failures (default 3). */
+  maxRetries?: number;
+  /**
+   * Initial back-off delay in milliseconds between retries (default 1000).
+   * Set to 0 in unit tests to avoid real timer dependencies.
+   * @internal
+   */
+  _backoffMs?: number;
 }
 
 /** Well-known network presets. */

@@ -20,6 +20,8 @@ import type { ClaimProof, ClaimResult, NetworkConfig } from "./types.js";
 import { AirdropContractError, RpcError } from "./types.js";
 
 export function createAirdropClient(config: NetworkConfig) {
+  const maxRetries = config.maxRetries ?? 3;
+  const defaultBackoffMs = config._backoffMs ?? 1000;
   const server = new rpc.Server(config.rpcUrl, { allowHttp: false });
   const contractInst = new Contract(config.contractId);
 
@@ -87,7 +89,7 @@ export function createAirdropClient(config: NetworkConfig) {
       .setTimeout(30)
       .build();
 
-    const simResult = await server.simulateTransaction(tx);
+    const simResult = await withRetry(() => server.simulateTransaction(tx));
     if (rpc.Api.isSimulationError(simResult)) {
       // Try to extract a numeric contract error code from the simulation error string.
       // Soroban surfaces contract errors as "Error(Contract, #N)" in the error message.
@@ -101,7 +103,7 @@ export function createAirdropClient(config: NetworkConfig) {
     const preparedTx = rpc.assembleTransaction(tx, simResult).build();
     preparedTx.sign(keypair);
 
-    const sendResult = await server.sendTransaction(preparedTx);
+    const sendResult = await withRetry(() => server.sendTransaction(preparedTx));
     if (sendResult.status === "ERROR") {
       throw new RpcError(
         `Transaction submission failed`,
@@ -162,7 +164,7 @@ export function createAirdropClient(config: NetworkConfig) {
       .setTimeout(30)
       .build();
 
-    const simResult = await server.simulateTransaction(tx);
+    const simResult = await withRetry(() => server.simulateTransaction(tx));
     if (rpc.Api.isSimulationError(simResult)) {
       const contractCode = parseContractErrorCode(simResult.error);
       if (contractCode !== null) {
@@ -187,7 +189,7 @@ export function createAirdropClient(config: NetworkConfig) {
     claimProof: ClaimProof
   ): Promise<ClaimResult> {
     const txEnvelope = TransactionBuilder.fromXDR(signedXdr, config.networkPassphrase) as Transaction;
-    const sendResult = await server.sendTransaction(txEnvelope);
+    const sendResult = await withRetry(() => server.sendTransaction(txEnvelope));
     if (sendResult.status === "ERROR") {
       throw new RpcError(
         `Transaction submission failed`,
@@ -213,6 +215,41 @@ export function createAirdropClient(config: NetworkConfig) {
     }
   }
 
+  /**
+   * Retry wrapper for transient RPC failures.
+   *
+   * Retries up to `maxAttempts` times with exponential back-off starting at
+   * `backoffMs`. Retries on:
+   *   - Any error that is NOT an {@link AirdropContractError} (which is a
+   *     deterministic contract failure and should never be retried).
+   *
+   * HTTP status codes 429 and 503 are detected by inspecting the error message.
+   *
+   * @param fn          - Async function to attempt.
+   * @param maxAttempts - Maximum number of attempts (default: config.maxRetries).
+   * @param backoffMs   - Initial back-off delay in milliseconds (default 1000).
+   */
+  async function withRetry<T>(
+    fn: () => Promise<T>,
+    maxAttempts = maxRetries,
+    backoffMs = defaultBackoffMs
+  ): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        // Never retry deterministic contract errors.
+        if (err instanceof AirdropContractError) throw err;
+        lastError = err;
+        if (attempt < maxAttempts) {
+          await sleep(backoffMs * Math.pow(2, attempt - 1));
+        }
+      }
+    }
+    throw lastError;
+  }
+
   async function simulateRead(operation: xdr.Operation): Promise<xdr.ScVal> {
     const dummy = Keypair.random();
     const account = new Account(dummy.publicKey(), "0");
@@ -224,8 +261,10 @@ export function createAirdropClient(config: NetworkConfig) {
       .setTimeout(30)
       .build();
 
-    const simResult = await server.simulateTransaction(tx);
+    const simResult = await withRetry(() => server.simulateTransaction(tx));
     if (rpc.Api.isSimulationError(simResult)) {
+      const contractCode = parseContractErrorCode(simResult.error);
+      if (contractCode !== null) throw new AirdropContractError(contractCode);
       throw new RpcError(`Read simulation failed: ${simResult.error}`);
     }
     return (simResult as rpc.Api.SimulateTransactionSuccessResponse).result!.retval;
