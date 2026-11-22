@@ -1,73 +1,110 @@
 /**
- * `merkle-airdrop pause` / `merkle-airdrop unpause`
+ * `merkle-airdrop pause` and `merkle-airdrop unpause`
  *
- * Activate or deactivate the airdrop contract. Only the admin key can call
- * this — the contract will reject any other signer.
+ * Admin commands to pause or resume the airdrop contract.
+ * Delegates to `setActive(false | true, adminSecretKey)` on the SDK client.
  */
 
 import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
 import { createAirdropClient, NETWORKS } from "@soroban-merkle-airdrop/sdk";
+import type { NetworkConfig } from "@soroban-merkle-airdrop/sdk";
+import { validateSecretKey } from "../validation.js";
+
+// ---------------------------------------------------------------------------
+// Shared helper — builds a NetworkConfig from the root program options.
+// ---------------------------------------------------------------------------
+
+function resolveNetworkConfig(opts: {
+  network?: string;
+  contractId?: string;
+  rpcUrl?: string;
+}): NetworkConfig {
+  const networkName = (opts.network ?? "testnet") as "testnet" | "mainnet";
+  const preset = NETWORKS[networkName];
+
+  if (!preset) {
+    throw new Error(
+      `Unknown network "${networkName}". Valid values: testnet, mainnet.`
+    );
+  }
+
+  const contractId = opts.contractId;
+  if (!contractId) {
+    throw new Error(
+      "Contract ID is required. Pass --contract-id <id> or set CONTRACT_ID in your environment."
+    );
+  }
+
+  return {
+    ...preset,
+    ...(opts.rpcUrl ? { rpcUrl: opts.rpcUrl } : {}),
+    contractId,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// `pause` command
+// ---------------------------------------------------------------------------
 
 export const pauseCommand = new Command("pause")
-  .description("Pause the airdrop (set_active false)")
-  .option("-k, --admin-key <key>", "Admin secret key (prefer STELLAR_SECRET_KEY env var)")
-  .action(async (opts, cmd) => {
-    await setActiveCommand(false, opts, cmd);
+  .description("Pause the airdrop contract (admin only)")
+  .requiredOption(
+    "-k, --admin-key <secretKey>",
+    "Admin Stellar secret key (S…)"
+  )
+  .option("-n, --network <network>", "testnet | mainnet", "testnet")
+  .option("--contract-id <id>", "Airdrop contract address")
+  .option("--rpc-url <url>", "Override RPC URL")
+  .action(async (opts) => {
+    const spinner = ora("Pausing airdrop...").start();
+
+    try {
+
+      const validatedSecretKey = validateSecretKey(opts.adminKey, "pause");
+
+      const config = resolveNetworkConfig(opts);
+      const client = createAirdropClient(config);
+
+      const { txHash } = await client.setActive(false, validatedSecretKey);
+
+      spinner.succeed(chalk.green("Airdrop paused successfully."));
+      console.log(`\n  ${chalk.bold("Tx hash:")} ${chalk.cyan(txHash)}\n`);
+    } catch (err) {
+      spinner.fail(chalk.red(`Failed to pause: ${(err as Error).message}`));
+      process.exit(1);
+    }
   });
+
+// ---------------------------------------------------------------------------
+// `unpause` command
+// ---------------------------------------------------------------------------
 
 export const unpauseCommand = new Command("unpause")
-  .description("Unpause the airdrop (set_active true)")
-  .option("-k, --admin-key <key>", "Admin secret key (prefer STELLAR_SECRET_KEY env var)")
-  .action(async (opts, cmd) => {
-    await setActiveCommand(true, opts, cmd);
+  .description("Resume (unpause) the airdrop contract (admin only)")
+  .requiredOption(
+    "-k, --admin-key <secretKey>",
+    "Admin Stellar secret key (S…)"
+  )
+  .option("-n, --network <network>", "testnet | mainnet", "testnet")
+  .option("--contract-id <id>", "Airdrop contract address")
+  .option("--rpc-url <url>", "Override RPC URL")
+  .action(async (opts) => {
+    const spinner = ora("Unpausing airdrop...").start();
+
+    try {
+      const validatedSecretKey = validateSecretKey(opts.adminKey, "unpause");
+
+      const config = resolveNetworkConfig(opts);
+      const client = createAirdropClient(config);
+
+      const { txHash } = await client.setActive(true, validatedSecretKey);
+
+      spinner.succeed(chalk.green("Airdrop unpaused successfully."));
+      console.log(`\n  ${chalk.bold("Tx hash:")} ${chalk.cyan(txHash)}\n`);
+    } catch (err) {
+      spinner.fail(chalk.red(`Failed to unpause: ${(err as Error).message}`));
+      process.exit(1);
+    }
   });
-
-async function setActiveCommand(
-  active: boolean,
-  opts: { adminKey?: string },
-  cmd: { parent?: { opts: () => Record<string, string> } }
-): Promise<void> {
-  const globalOpts = cmd.parent?.opts() ?? {};
-  const network = globalOpts["network"] ?? "testnet";
-  const contractId = globalOpts["contractId"] ?? process.env.AIRDROP_CONTRACT_ID;
-
-  if (opts.adminKey) {
-    console.warn(
-      chalk.yellow(
-        "Warning: passing secret keys as command-line arguments is insecure. " +
-          "Use STELLAR_SECRET_KEY env var instead."
-      )
-    );
-  }
-
-  const secretKey = opts.adminKey ?? process.env.STELLAR_SECRET_KEY;
-
-  if (!contractId) {
-    console.error(chalk.red("Error: --contract-id or AIRDROP_CONTRACT_ID required"));
-    process.exit(1);
-  }
-  if (!secretKey) {
-    console.error(chalk.red("Error: --admin-key or STELLAR_SECRET_KEY required"));
-    process.exit(1);
-  }
-
-  const label = active ? "Unpausing" : "Pausing";
-  const spinner = ora(`${label} the airdrop...`).start();
-
-  try {
-    const preset = NETWORKS[network];
-    const client = createAirdropClient({ ...preset, contractId });
-
-    const result = await client.setActive(active, secretKey);
-
-    spinner.succeed(
-      chalk.green(`Airdrop ${active ? "unpaused (active)" : "paused (inactive)"}.`)
-    );
-    console.log(`\n  ${chalk.bold("Tx hash:")} ${chalk.cyan(result.txHash)}\n`);
-  } catch (err) {
-    spinner.fail(`Error: ${(err as Error).message}`);
-    process.exit(1);
-  }
-}

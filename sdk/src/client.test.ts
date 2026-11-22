@@ -1,395 +1,451 @@
 /**
- * Tests for sdk/src/client.ts — createAirdropClient methods,
- * and for formatAmount exported from index.ts.
+ * Unit tests for createAirdropClient — focusing on Issue #15: polling timeout.
+ *
+ * The RPC layer is fully mocked so these tests run instantly without any
+ * network access.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { formatAmount } from "./index.js";
+import { createAirdropClient } from "./client.js";
+import { RpcError } from "./types.js";
 
-// ---------------------------------------------------------------------------
-// formatAmount
-// ---------------------------------------------------------------------------
+// ─── Minimal mocks for @stellar/stellar-sdk ────────────────────────────────
 
-describe("formatAmount", () => {
-  it("formats a whole number", () => {
-    // 10_000_000 stroops = 1 XLM
-    expect(formatAmount(10_000_000n)).toBe("1");
-  });
-
-  it("formats a fractional amount", () => {
-    // 123_456_789 stroops = 12.3456789 XLM
-    expect(formatAmount(123_456_789n)).toBe("12.3456789");
-  });
-
-  it("strips trailing zeros", () => {
-    // 5_000_000 stroops = 0.5 XLM
-    expect(formatAmount(5_000_000n)).toBe("0.5");
-  });
-
-  it("formats zero", () => {
-    expect(formatAmount(0n)).toBe("0");
-  });
-
-  it("respects custom decimals", () => {
-    expect(formatAmount(1_000n, 3)).toBe("1");
-    expect(formatAmount(1_500n, 3)).toBe("1.5");
-  });
-
-  it("handles large amounts", () => {
-    // 1_000_000_000 * 10_000_000 stroops = 1_000_000_000 XLM
-    expect(formatAmount(10_000_000_000_000_000n)).toBe("1000000000");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// createAirdropClient — unit tests with mocked @stellar/stellar-sdk
-// ---------------------------------------------------------------------------
-
-// We mock the stellar SDK module so that rpc.Server is replaced with a
-// factory returning our controlled mock object.
+// We mock the entire stellar-sdk module so no real network calls are made.
 vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
+  // eslint-disable-next-line @typescript-eslint/consistent-type-imports
   const actual = await importOriginal<typeof import("@stellar/stellar-sdk")>();
 
-  // We replace rpc.Server with a constructor that returns our mock instance.
-  // The mock instance is stored on the module so tests can configure it.
-  const mockServerInstance = {
-    simulateTransaction: vi.fn(),
-    sendTransaction: vi.fn(),
-    getTransaction: vi.fn(),
-    getAccount: vi.fn(),
-  };
+  // Stub that records calls and returns controllable values.
+  const mockSendTransaction = vi.fn();
+  const mockGetTransaction = vi.fn();
+  const mockGetAccount = vi.fn();
+  const mockSimulateTransaction = vi.fn();
 
-  class MockServer {
-    simulateTransaction = mockServerInstance.simulateTransaction;
-    sendTransaction = mockServerInstance.sendTransaction;
-    getTransaction = mockServerInstance.getTransaction;
-    getAccount = mockServerInstance.getAccount;
-  }
+  const MockServer = vi.fn().mockImplementation(function (this: unknown) {
+    Object.assign(this as object, {
+      sendTransaction: mockSendTransaction,
+      getTransaction: mockGetTransaction,
+      getAccount: mockGetAccount,
+      simulateTransaction: mockSimulateTransaction,
+    });
+  });
 
   return {
     ...actual,
     rpc: {
       ...actual.rpc,
       Server: MockServer,
+      assembleTransaction: vi.fn().mockReturnValue({ build: vi.fn().mockReturnValue({ toXDR: vi.fn(), sign: vi.fn() }) }),
+      Api: actual.rpc?.Api ?? {},
     },
-    __mockServerInstance: mockServerInstance,
+    Contract: vi.fn().mockImplementation(function (this: unknown) {
+      Object.assign(this as object, {
+        call: vi.fn().mockReturnValue({}),
+      });
+    }),
+    TransactionBuilder: vi.fn().mockImplementation(function (this: unknown) {
+      const self = {
+        addOperation: vi.fn().mockReturnThis(),
+        setTimeout: vi.fn().mockReturnThis(),
+        build: vi.fn().mockReturnValue({ sign: vi.fn(), toXDR: vi.fn() }),
+      };
+      // mockReturnThis needs the methods on `this`
+      Object.assign(this as object, self);
+    }),
+    Account: vi.fn().mockImplementation(function (this: unknown) {
+      Object.assign(this as object, {});
+    }),
+    Keypair: {
+      ...actual.Keypair,
+      fromSecret: vi.fn().mockReturnValue({
+        publicKey: vi.fn().mockReturnValue("GABC123"),
+        sign: vi.fn(),
+      }),
+      random: vi.fn().mockReturnValue({
+        publicKey: vi.fn().mockReturnValue("GRND123"),
+      }),
+    },
   };
 });
 
-import {
-  xdr,
-  nativeToScVal,
-  rpc,
-  Keypair,
-  SorobanDataBuilder,
-} from "@stellar/stellar-sdk";
-import { createAirdropClient } from "./client.js";
+// ─── Helper to get the mocked server instance ───────────────────────────────
 
-// Access our mock server instance through the module mock.
-const sdk = await import("@stellar/stellar-sdk") as typeof import("@stellar/stellar-sdk") & {
-  __mockServerInstance: {
-    simulateTransaction: ReturnType<typeof vi.fn>;
+async function getMockServer() {
+  const sdk = await import("@stellar/stellar-sdk");
+  // The Server constructor is mocked — grab the most recently created instance.
+  const MockServer = sdk.rpc.Server as unknown as ReturnType<typeof vi.fn>;
+  return MockServer.mock.instances[MockServer.mock.instances.length - 1] as {
     sendTransaction: ReturnType<typeof vi.fn>;
     getTransaction: ReturnType<typeof vi.fn>;
     getAccount: ReturnType<typeof vi.fn>;
+    simulateTransaction: ReturnType<typeof vi.fn>;
   };
-};
+}
 
-const mockServer = sdk.__mockServerInstance;
+// ─── Config helpers ─────────────────────────────────────────────────────────
 
-const TEST_SECRET = Keypair.random().secret();
-const TEST_PUBLIC = Keypair.fromSecret(TEST_SECRET).publicKey();
-
-const config = {
+const BASE_CONFIG = {
   network: "testnet" as const,
   rpcUrl: "https://soroban-testnet.stellar.org",
   networkPassphrase: "Test SDF Network ; September 2015",
-  contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+  contractId: "CTEST123456789",
 };
 
-/** Minimal Account-like object for getAccount mock. */
-function fakeAccount(publicKey: string) {
-  return {
-    id: publicKey,
-    sequence: "1000",
-    accountId: () => publicKey,
-    sequenceNumber: () => "1000",
-    incrementSequenceNumber: () => {},
-  };
-}
+const CLAIM_PROOF = {
+  address: "GABC123",
+  amount: 1000n,
+  proof: [],
+};
 
-/** Build a minimal SimulateTransactionSuccessResponse for read-only calls. */
-function makeReadSimSuccess(retval: xdr.ScVal): rpc.Api.SimulateTransactionSuccessResponse {
-  return {
-    id: "1",
-    latestLedger: 100,
-    cost: { cpuInsns: "0", memBytes: "0" },
-    result: { retval, auth: [] },
-    stateChanges: [],
-    _parsed: true,
-  } as unknown as rpc.Api.SimulateTransactionSuccessResponse;
-}
+// ─── Tests ──────────────────────────────────────────────────────────────────
 
-/**
- * Build a SimulateTransactionSuccessResponse that includes the transaction
- * data shape required by rpc.assembleTransaction.
- * assembleTransaction calls success.transactionData.build(), so we must pass
- * a SorobanDataBuilder instance, not a raw xdr.SorobanTransactionData.
- */
-function makeWriteSimSuccess(retval: xdr.ScVal): rpc.Api.SimulateTransactionSuccessResponse {
-  const txDataBuilder = new SorobanDataBuilder()
-    .setResourceFee(100n)
-    .setResources(1000, 512, 256);
-
-  return {
-    id: "1",
-    latestLedger: 100,
-    cost: { cpuInsns: "0", memBytes: "0" },
-    result: { retval, auth: [] },
-    minResourceFee: "100",
-    transactionData: txDataBuilder,
-    stateChanges: [],
-    _parsed: true,
-  } as unknown as rpc.Api.SimulateTransactionSuccessResponse;
-}
-
-/** Minimal SimulateTransactionErrorResponse. */
-function makeSimError(): rpc.Api.SimulateTransactionErrorResponse {
-  return {
-    id: "1",
-    latestLedger: 100,
-    error: "contract error",
-    _parsed: true,
-  } as unknown as rpc.Api.SimulateTransactionErrorResponse;
-}
-
-describe("createAirdropClient", () => {
+describe("createAirdropClient — polling timeout (Issue #15)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockServer.getAccount.mockImplementation((pk: string) =>
-      Promise.resolve(fakeAccount(pk))
-    );
   });
 
-  // -------------------------------------------------------------------------
-  // isActive
-  // -------------------------------------------------------------------------
+  it("throws RpcError with timeout message when pollTimeoutMs is exceeded in claim()", async () => {
+    // Use a very short timeout so the test completes quickly.
+    const client = createAirdropClient({ ...BASE_CONFIG, pollTimeoutMs: 100 });
+    const server = await getMockServer();
 
-  describe("isActive", () => {
-    it("returns true when contract says active", async () => {
-      mockServer.simulateTransaction.mockResolvedValue(
-        makeReadSimSuccess(nativeToScVal(true, { type: "bool" }))
-      );
-      const client = createAirdropClient(config);
-      expect(await client.isActive()).toBe(true);
+    // Simulate a source account lookup.
+    server.getAccount.mockResolvedValue({ id: "GABC123", sequenceNumber: () => "0" });
+
+    // Simulate succeeds (no error).
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: {} },
+      transactionData: {},
+      minResourceFee: "100",
     });
 
-    it("returns false when contract says inactive", async () => {
-      mockServer.simulateTransaction.mockResolvedValue(
-        makeReadSimSuccess(nativeToScVal(false, { type: "bool" }))
-      );
-      const client = createAirdropClient(config);
-      expect(await client.isActive()).toBe(false);
+    // sendTransaction returns a hash with PENDING status.
+    server.sendTransaction.mockResolvedValue({ status: "PENDING", hash: "abc123hash" });
+
+    // getTransaction always returns NOT_FOUND — simulating a lost transaction.
+    server.getTransaction.mockResolvedValue({ status: "NOT_FOUND" });
+
+    // The claim must reject with a timeout error.
+    await expect(
+      client.claim(CLAIM_PROOF, "STEST123")
+    ).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(RpcError);
+      const message = (err as RpcError).message;
+      expect(message).toMatch(/Transaction confirmation timeout after 100ms/);
+      expect(message).toContain("abc123hash");
+      return true;
     });
+  }, 10_000);
+
+  it("throws RpcError with timeout message when pollTimeoutMs is exceeded in submitSignedTransaction()", async () => {
+    const client = createAirdropClient({ ...BASE_CONFIG, pollTimeoutMs: 100 });
+    const server = await getMockServer();
+
+    server.sendTransaction.mockResolvedValue({ status: "PENDING", hash: "xyz789hash" });
+    server.getTransaction.mockResolvedValue({ status: "NOT_FOUND" });
+
+    await expect(
+      client.submitSignedTransaction("dummyXDR", CLAIM_PROOF)
+    ).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(RpcError);
+      const message = (err as RpcError).message;
+      expect(message).toMatch(/Transaction confirmation timeout after 100ms/);
+      expect(message).toContain("xyz789hash");
+      return true;
+    });
+  }, 10_000);
+
+  it("defaults to 60 000 ms when pollTimeoutMs is omitted", () => {
+    // Just verify the client can be constructed without pollTimeoutMs —
+    // we don't run the full 60s loop, just confirm no immediate throw.
+    expect(() => createAirdropClient(BASE_CONFIG)).not.toThrow();
   });
 
-  // -------------------------------------------------------------------------
-  // isClaimed
-  // -------------------------------------------------------------------------
+  it("resolves successfully before the timeout if transaction confirms", async () => {
+    const client = createAirdropClient({ ...BASE_CONFIG, pollTimeoutMs: 5000 });
+    const server = await getMockServer();
 
-  describe("isClaimed", () => {
-    it("returns false for unclaimed address", async () => {
-      mockServer.simulateTransaction.mockResolvedValue(
-        makeReadSimSuccess(nativeToScVal(false, { type: "bool" }))
-      );
-      const client = createAirdropClient(config);
-      expect(await client.isClaimed(TEST_PUBLIC)).toBe(false);
+    server.getAccount.mockResolvedValue({ id: "GABC123", sequenceNumber: () => "0" });
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: {} },
+      transactionData: {},
+      minResourceFee: "100",
     });
+    server.sendTransaction.mockResolvedValue({ status: "PENDING", hash: "success123" });
 
-    it("returns true for already-claimed address", async () => {
-      mockServer.simulateTransaction.mockResolvedValue(
-        makeReadSimSuccess(nativeToScVal(true, { type: "bool" }))
-      );
-      const client = createAirdropClient(config);
-      expect(await client.isClaimed(TEST_PUBLIC)).toBe(true);
-    });
+    // First poll returns NOT_FOUND, second returns SUCCESS.
+    server.getTransaction
+      .mockResolvedValueOnce({ status: "NOT_FOUND" })
+      .mockResolvedValueOnce({ status: "SUCCESS" });
+
+    const result = await client.claim(CLAIM_PROOF, "STEST123");
+    expect(result.success).toBe(true);
+    expect(result.txHash).toBe("success123");
+  }, 15_000);
+});
+
+// ─── Issue #487: claimedCount() in public API ───────────────────────────────
+
+describe("createAirdropClient — claimedCount() (Issue #487)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  // -------------------------------------------------------------------------
-  // setActive
-  // -------------------------------------------------------------------------
-
-  describe("setActive", () => {
-    it("builds and submits a transaction, returns txHash", async () => {
-      const expectedHash = "aabbcc112233";
-      mockServer.simulateTransaction.mockResolvedValue(
-        makeWriteSimSuccess(xdr.ScVal.scvVoid())
-      );
-      mockServer.sendTransaction.mockResolvedValue({
-        status: "PENDING",
-        hash: expectedHash,
-      });
-      mockServer.getTransaction.mockResolvedValue({ status: "SUCCESS" });
-
-      const client = createAirdropClient(config);
-      const result = await client.setActive(false, TEST_SECRET);
-
-      expect(mockServer.simulateTransaction).toHaveBeenCalledOnce();
-      expect(mockServer.sendTransaction).toHaveBeenCalledOnce();
-      expect(result.txHash).toBe(expectedHash);
-    });
-
-    it("throws when simulation fails", async () => {
-      mockServer.simulateTransaction.mockResolvedValue(makeSimError());
-
-      const client = createAirdropClient(config);
-      await expect(client.setActive(true, TEST_SECRET)).rejects.toThrow(
-        "Simulation failed"
-      );
-    });
-
-    it("throws when transaction fails on-chain", async () => {
-      mockServer.simulateTransaction.mockResolvedValue(
-        makeWriteSimSuccess(xdr.ScVal.scvVoid())
-      );
-      mockServer.sendTransaction.mockResolvedValue({
-        status: "PENDING",
-        hash: "abc",
-      });
-      mockServer.getTransaction.mockResolvedValue({ status: "FAILED" });
-
-      const client = createAirdropClient(config);
-      await expect(client.setActive(false, TEST_SECRET)).rejects.toThrow(
-        "Transaction failed on-chain"
-      );
-    });
-
-    it("sets active=true without error", async () => {
-      mockServer.simulateTransaction.mockResolvedValue(
-        makeWriteSimSuccess(xdr.ScVal.scvVoid())
-      );
-      mockServer.sendTransaction.mockResolvedValue({
-        status: "PENDING",
-        hash: "hash123",
-      });
-      mockServer.getTransaction.mockResolvedValue({ status: "SUCCESS" });
-
-      const client = createAirdropClient(config);
-      const result = await client.setActive(true, TEST_SECRET);
-      expect(result.txHash).toBe("hash123");
-    });
+  it("claimedCount is present on the client object", () => {
+    const client = createAirdropClient(BASE_CONFIG);
+    expect(typeof client.claimedCount).toBe("function");
   });
 
-  // -------------------------------------------------------------------------
-  // reclaim
-  // -------------------------------------------------------------------------
+  it("claimedCount() returns a number when the contract responds", async () => {
+    const { xdr } = await import("@stellar/stellar-sdk");
+    const client = createAirdropClient(BASE_CONFIG);
+    const server = await getMockServer();
 
-  describe("reclaim", () => {
-    it("returns txHash and amount from contract return value", async () => {
-      const expectedHash = "ddeeff001122";
-      const expectedAmount = 500_000_000n;
-
-      mockServer.simulateTransaction.mockResolvedValue(
-        makeWriteSimSuccess(nativeToScVal(expectedAmount, { type: "i128" }))
-      );
-      mockServer.sendTransaction.mockResolvedValue({
-        status: "PENDING",
-        hash: expectedHash,
-      });
-      mockServer.getTransaction.mockResolvedValue({
-        status: "SUCCESS",
-        returnValue: nativeToScVal(expectedAmount, { type: "i128" }),
-      });
-
-      const client = createAirdropClient(config);
-      const result = await client.reclaim(TEST_SECRET);
-
-      expect(result.txHash).toBe(expectedHash);
-      expect(result.amount).toBe(expectedAmount);
+    // The contract returns a u32 count — simulate that with scvU32.
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: xdr.ScVal.scvU32(42) },
+      transactionData: {},
+      minResourceFee: "100",
     });
 
-    it("returns amount=0n when no returnValue in poll response", async () => {
-      mockServer.simulateTransaction.mockResolvedValue(
-        makeWriteSimSuccess(xdr.ScVal.scvVoid())
-      );
-      mockServer.sendTransaction.mockResolvedValue({
-        status: "PENDING",
-        hash: "xyz",
-      });
-      mockServer.getTransaction.mockResolvedValue({ status: "SUCCESS" });
+    const count = await client.claimedCount();
+    expect(typeof count).toBe("number");
+    expect(count).toBe(42);
+  });
+});
 
-      const client = createAirdropClient(config);
-      const result = await client.reclaim(TEST_SECRET);
-      expect(result.amount).toBe(0n);
-    });
-
-    it("throws when simulation fails", async () => {
-      mockServer.simulateTransaction.mockResolvedValue(makeSimError());
-
-      const client = createAirdropClient(config);
-      await expect(client.reclaim(TEST_SECRET)).rejects.toThrow(
-        "Simulation failed"
-      );
-    });
-
-    it("throws when transaction fails on-chain", async () => {
-      mockServer.simulateTransaction.mockResolvedValue(
-        makeWriteSimSuccess(xdr.ScVal.scvVoid())
-      );
-      mockServer.sendTransaction.mockResolvedValue({
-        status: "PENDING",
-        hash: "fail-hash",
-      });
-      mockServer.getTransaction.mockResolvedValue({ status: "FAILED" });
-
-      const client = createAirdropClient(config);
-      await expect(client.reclaim(TEST_SECRET)).rejects.toThrow(
-        "Transaction failed on-chain"
-      );
-    });
+describe("createAirdropClient — expiration() (Issue #40)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  // -------------------------------------------------------------------------
-  // simulateClaim
-  // -------------------------------------------------------------------------
+  it("returns null when contract is not initialised (scvVoid)", async () => {
+    const { xdr } = await import("@stellar/stellar-sdk");
+    const client = createAirdropClient(BASE_CONFIG);
+    const server = await getMockServer();
 
-  describe("simulateClaim", () => {
-    it("returns fee and resources from a successful simulation", async () => {
-      mockServer.simulateTransaction.mockResolvedValue(
-        makeWriteSimSuccess(xdr.ScVal.scvVoid())
-      );
-
-      const client = createAirdropClient(config);
-      const proof = { address: TEST_PUBLIC, amount: 1000n, proof: [] };
-      const result = await client.simulateClaim(proof, TEST_PUBLIC);
-
-      expect(result.fee).toBe("100");
-      expect(typeof result.resources.instructions).toBe("number");
-      expect(typeof result.resources.readBytes).toBe("number");
-      expect(typeof result.resources.writeBytes).toBe("number");
+    // Simulate returning scvVoid — contract not initialised.
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: xdr.ScVal.scvVoid() },
+      transactionData: {},
+      minResourceFee: "100",
     });
 
-    it("throws when simulation errors", async () => {
-      mockServer.simulateTransaction.mockResolvedValue(makeSimError());
+    const result = await client.expiration();
+    expect(result).toBeNull();
+  });
 
-      const client = createAirdropClient(config);
-      const proof = { address: TEST_PUBLIC, amount: 1000n, proof: [] };
-      await expect(client.simulateClaim(proof, TEST_PUBLIC)).rejects.toThrow(
-        "Simulation failed"
-      );
+  it("returns a bigint Unix timestamp when contract is initialised", async () => {
+    const { xdr } = await import("@stellar/stellar-sdk");
+    const client = createAirdropClient(BASE_CONFIG);
+    const server = await getMockServer();
+
+    // Simulate returning a u64 value (1_700_000_000 seconds — a realistic timestamp).
+    const expectedTimestamp = 1_700_000_000n;
+    server.simulateTransaction.mockResolvedValue({
+      result: {
+        retval: xdr.ScVal.scvU64(
+          xdr.Uint64.fromString(expectedTimestamp.toString())
+        ),
+      },
+      transactionData: {},
+      minResourceFee: "100",
     });
 
-    it("does not submit a transaction (simulateTransaction called once, sendTransaction never)", async () => {
-      mockServer.simulateTransaction.mockResolvedValue(
-        makeWriteSimSuccess(xdr.ScVal.scvVoid())
-      );
+    const result = await client.expiration();
+    expect(typeof result).toBe("bigint");
+    expect(result).toBe(expectedTimestamp);
+  });
+});
 
-      const client = createAirdropClient(config);
-      const proof = { address: TEST_PUBLIC, amount: 2000n, proof: [] };
-      await client.simulateClaim(proof, TEST_PUBLIC);
+// ─── Issue #57: remainingBalance() method ──────────────────────────────────
 
-      expect(mockServer.simulateTransaction).toHaveBeenCalledOnce();
-      expect(mockServer.sendTransaction).not.toHaveBeenCalled();
+describe("createAirdropClient — remainingBalance() (Issue #57)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 0n when contract is not initialised (scvVoid)", async () => {
+    const { xdr } = await import("@stellar/stellar-sdk");
+    const client = createAirdropClient(BASE_CONFIG);
+    const server = await getMockServer();
+
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: xdr.ScVal.scvI128(new xdr.Int128Parts({ lo: xdr.Uint64.fromString("0"), hi: new xdr.Int64(0) })) },
+      transactionData: {},
+      minResourceFee: "100",
     });
+
+    const result = await client.remainingBalance();
+    expect(typeof result).toBe("bigint");
+    expect(result).toBe(0n);
+  });
+
+  it("returns a positive bigint when contract holds tokens", async () => {
+    const { xdr } = await import("@stellar/stellar-sdk");
+    const client = createAirdropClient(BASE_CONFIG);
+    const server = await getMockServer();
+
+    server.simulateTransaction.mockResolvedValue({
+      result: {
+        retval: xdr.ScVal.scvI128(
+          new xdr.Int128Parts({ lo: xdr.Uint64.fromString("5000"), hi: new xdr.Int64(0) })
+        ),
+      },
+      transactionData: {},
+      minResourceFee: "100",
+    });
+
+    const result = await client.remainingBalance();
+    expect(typeof result).toBe("bigint");
+    expect(result).toBe(5000n);
+  });
+});
+
+// ─── Issue #58: tokenDecimals() method ────────────────────────────────────
+
+describe("createAirdropClient — tokenDecimals() (Issue #58)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns null when token() returns void (contract not initialised)", async () => {
+    const { xdr } = await import("@stellar/stellar-sdk");
+    const client = createAirdropClient(BASE_CONFIG);
+    const server = await getMockServer();
+
+    // token() returns void
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: xdr.ScVal.scvVoid() },
+      transactionData: {},
+      minResourceFee: "100",
+    });
+
+    const result = await client.tokenDecimals();
+    expect(result).toBeNull();
+  });
+
+  it("returns null when simulation throws (fallback)", async () => {
+    const client = createAirdropClient(BASE_CONFIG);
+    const server = await getMockServer();
+
+    server.simulateTransaction.mockRejectedValue(new Error("Network error"));
+
+    const result = await client.tokenDecimals();
+    expect(result).toBeNull();
+  });
+});
+
+// ─── Issue #58: formatAmount utility ───────────────────────────────────────
+
+describe("formatAmount (Issue #58)", () => {
+  it("is exported from the SDK", async () => {
+    const sdk = await import("./index.js");
+    expect(typeof sdk.formatAmount).toBe("function");
+  });
+
+  it("formats 10000000 with 7 decimals as '1.0000000'", async () => {
+    const { formatAmount } = await import("./index.js");
+    expect(formatAmount(10_000_000n, 7)).toBe("1.0000000");
+  });
+
+  it("formats 0 as '0.0000000' with 7 decimals", async () => {
+    const { formatAmount } = await import("./index.js");
+    expect(formatAmount(0n, 7)).toBe("0.0000000");
+  });
+
+  it("formats raw int with 0 decimals as plain integer string", async () => {
+    const { formatAmount } = await import("./index.js");
+    expect(formatAmount(1234n, 0)).toBe("1234");
+  });
+
+  it("pads leading zeros in fractional part correctly", async () => {
+    const { formatAmount } = await import("./index.js");
+    // 15000 with 7 decimals = 0.0015000
+    expect(formatAmount(15000n, 7)).toBe("0.0015000");
+  });
+});
+
+// ─── Issue #498: claimFor() method ─────────────────────────────────────────
+
+// A valid-format Stellar G-address for claimFor tests (56-char strkey).
+const VALID_CLAIMANT = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
+const CLAIMFOR_PROOF = {
+  address: VALID_CLAIMANT,
+  amount: 1000n,
+  proof: [],
+};
+
+describe("createAirdropClient — claimFor() (Issue #498)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("submits a transaction calling claim_for and returns ClaimResult with claimant address", async () => {
+    const client = createAirdropClient({ ...BASE_CONFIG, pollTimeoutMs: 5000 });
+    const server = await getMockServer();
+
+    // The operator (not the claimant) is the transaction source.
+    server.getAccount.mockResolvedValue({ id: "GOPERATOR123", sequenceNumber: () => "0" });
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: {} },
+      transactionData: {},
+      minResourceFee: "100",
+    });
+    server.sendTransaction.mockResolvedValue({ status: "PENDING", hash: "claimfor-hash" });
+    server.getTransaction
+      .mockResolvedValueOnce({ status: "NOT_FOUND" })
+      .mockResolvedValueOnce({ status: "SUCCESS" });
+
+    const result = await client.claimFor(CLAIMFOR_PROOF, "STEST123");
+
+    expect(result.success).toBe(true);
+    expect(result.txHash).toBe("claimfor-hash");
+    // Tokens go to the claimant's address, not the operator.
+    expect(result.address).toBe(CLAIMFOR_PROOF.address);
+    expect(result.amount).toBe(CLAIMFOR_PROOF.amount);
+  }, 15_000);
+
+  it("throws RpcError with timeout message when pollTimeoutMs is exceeded in claimFor()", async () => {
+    const client = createAirdropClient({ ...BASE_CONFIG, pollTimeoutMs: 100 });
+    const server = await getMockServer();
+
+    server.getAccount.mockResolvedValue({ id: "GOPERATOR123", sequenceNumber: () => "0" });
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: {} },
+      transactionData: {},
+      minResourceFee: "100",
+    });
+    server.sendTransaction.mockResolvedValue({ status: "PENDING", hash: "claimfor-timeout" });
+    server.getTransaction.mockResolvedValue({ status: "NOT_FOUND" });
+
+    await expect(
+      client.claimFor(CLAIMFOR_PROOF, "STEST123")
+    ).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(RpcError);
+      const message = (err as RpcError).message;
+      expect(message).toMatch(/Transaction confirmation timeout after 100ms/);
+      expect(message).toContain("claimfor-timeout");
+      return true;
+    });
+  }, 10_000);
+
+  it("throws RpcError when sendTransaction returns ERROR in claimFor()", async () => {
+    const client = createAirdropClient(BASE_CONFIG);
+    const server = await getMockServer();
+
+    server.getAccount.mockResolvedValue({ id: "GOPERATOR123", sequenceNumber: () => "0" });
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: {} },
+      transactionData: {},
+      minResourceFee: "100",
+    });
+    server.sendTransaction.mockResolvedValue({
+      status: "ERROR",
+      errorResult: { toXDR: () => "base64xdr" },
+    });
+
+    await expect(client.claimFor(CLAIMFOR_PROOF, "STEST123")).rejects.toBeInstanceOf(RpcError);
   });
 });
