@@ -368,7 +368,8 @@ describe("ClaimPage — success card (#523)", () => {
   });
 });
 
-describe("ClaimPage — claim error flow", () => {  beforeEach(() => {
+describe("ClaimPage — claim error flow", () => {
+  beforeEach(() => {
     vi.clearAllMocks();
     mockIsConnected.mockResolvedValue(true);
     mockGetPublicKey.mockResolvedValue(ELIGIBLE_ADDRESS);
