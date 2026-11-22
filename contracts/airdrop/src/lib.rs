@@ -22,14 +22,17 @@
 //!
 //! # Storage layout
 //!
-//! - `DataKey::MerkleRoot`          → `BytesN<32>`  (instance)
-//! - `DataKey::TokenAddress`        → `Address`     (instance)
-//! - `DataKey::Admin`               → `Address`     (instance)
-//! - `DataKey::TotalDeposited`      → `i128`        (instance)
-//! - `DataKey::Active`              → `bool`        (instance)
-//! - `DataKey::Expiration`          → `u64`         (instance)
-//! - `DataKey::ClaimedCount`          → `u32`           (instance)
-//! - `DataKey::Claimed(addr)`       → `bool`        (persistent, per claimant)
+//! - `DataKey::MerkleRoot`          → `BytesN<32>`  (instance) — set by `initialize`, `update_merkle_root`
+//! - `DataKey::TokenAddress`        → `Address`     (instance) — set by `initialize`
+//! - `DataKey::Admin`               → `Address`     (instance) — set by `initialize`, `transfer_admin`
+//! - `DataKey::TotalDeposited`      → `i128`        (instance) — set by `initialize`, `update_merkle_root`
+//! - `DataKey::Active`              → `bool`        (instance) — set by `initialize`, `set_active`
+//! - `DataKey::Expiration`          → `u64`         (instance) — set by `initialize`
+//! - `DataKey::ClaimedCount`        → `u32`         (instance) — set by `claim`, `claim_for`, `batch_claim`
+//! - `DataKey::TotalClaimed`        → `i128`        (instance) — set by `claim`, `claim_for`, `batch_claim`
+//! - `DataKey::ClaimedTtl`          → `u32`         (instance) — set by `initialize`
+//! - `DataKey::InstanceTtl`         → `u32`         (instance) — set by `initialize`
+//! - `DataKey::Claimed(addr)`       → `bool`        (persistent, per claimant) — set by `claim`, `claim_for`, `batch_claim`
 
 #![no_std]
 
