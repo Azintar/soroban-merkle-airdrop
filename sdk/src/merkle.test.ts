@@ -601,3 +601,56 @@ describe("Issue #31 — property-based tests (fast-check)", () => {
     }
   );
 });
+
+// ─── Issue #482: leafHash boundary amounts ─────────────────────────────────
+//
+// leafHash() encodes the amount as a 16-byte big-endian i128 split into a
+// signed high 64-bit word and an unsigned low 64-bit word:
+//
+//   amountBuf.writeBigInt64BE(BigInt.asIntN(64, hi), 0);
+//   amountBuf.writeBigUInt64BE(lo, 8);
+//
+// Encoding bugs only surface at the extremes of the high/low word split, so
+// these tests pin the boundary values explicitly. Per the issue, validation
+// of amounts is the caller's responsibility — leafHash must not throw for
+// any bigint input.
+describe("leafHash — boundary amounts", () => {
+  it("amount = 0n produces a 32-byte hash without throwing", () => {
+    const hash = leafHash(ADDR_1, 0n);
+    expect(hash).toBeInstanceOf(Buffer);
+    expect(hash.length).toBe(32);
+    expect(hash.toString("hex")).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("amount = 1n (low-word-only) differs from amount = 2n", () => {
+    const h1 = leafHash(ADDR_1, 1n).toString("hex");
+    const h2 = leafHash(ADDR_1, 2n).toString("hex");
+    expect(h1).not.toBe(h2);
+  });
+
+  it("amount = 2n**63n (exactly fills the low word) produces a hash", () => {
+    const hash = leafHash(ADDR_1, 2n ** 63n);
+    expect(hash.length).toBe(32);
+    expect(hash.toString("hex")).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("amount = 2n**64n (spills into the high word) produces a hash", () => {
+    const hash = leafHash(ADDR_1, 2n ** 64n);
+    expect(hash.length).toBe(32);
+    // Must differ from 0n: the high word is now set.
+    expect(hash.toString("hex")).not.toBe(leafHash(ADDR_1, 0n).toString("hex"));
+  });
+
+  it("amount = 2n**127n - 1n (i128::MAX) produces a hash without panicking", () => {
+    const hash = leafHash(ADDR_1, 2n ** 127n - 1n);
+    expect(hash.length).toBe(32);
+    expect(hash.toString("hex")).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("amount = -1n (negative) produces a hash distinct from 0n", () => {
+    // -1n encodes as all-ones i128: hi = -1, lo = 2**64-1.
+    const hNeg = leafHash(ADDR_1, -1n).toString("hex");
+    const hZero = leafHash(ADDR_1, 0n).toString("hex");
+    expect(hNeg).not.toBe(hZero);
+  });
+});
