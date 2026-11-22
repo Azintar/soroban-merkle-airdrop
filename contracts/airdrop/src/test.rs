@@ -946,26 +946,20 @@ fn test_non_admin_reclaim_fails() {
 /// Loop over every entry in `test-vectors/leaf-hash-vectors.json` and assert
 /// that `merkle::leaf_hash` in Rust produces the expected hex output.
 ///
-/// The expected values in the JSON file were produced by running the compiled
-/// TypeScript SDK (`sdk/src/merkle.ts`) with the same inputs, so a mismatch
-/// here means the two implementations have diverged.
+/// The expected values in the JSON file were produced by running
+/// `scripts/gen-test-vectors.ts` with the TypeScript SDK, so a mismatch here
+/// means the two implementations have diverged.
 ///
 /// Vectors cover: G-addresses, C-addresses, amount=1, amount=i128::MAX,
-/// amounts where only the high 64-bit word is set, and typical amounts.
+/// amounts where only the high 64-bit word is set, typical amounts, and
+/// domain-separation checks (same address/amount, different contract_id).
 ///
-/// # ⚠ Ignored — vectors need regeneration after issue #50 domain separation
+/// To regenerate the vectors after any change to `leaf_hash`:
 ///
-/// The leaf hash algorithm now includes the contract address as a domain
-/// separator.  The `test-vectors/leaf-hash-vectors.json` file and the
-/// `expected_leaf_hex` values below need to be regenerated with the updated
-/// TypeScript SDK.  Run:
+///   node scripts/gen-test-vectors.ts > test-vectors/leaf-hash-vectors.json
 ///
-///   cd sdk && pnpm build && node scripts/gen-test-vectors.js > \
-///       ../test-vectors/leaf-hash-vectors.json
-///
-/// then remove the `#[ignore]` annotation.
+/// Closes #474
 #[test]
-#[ignore = "vectors need regeneration after issue #50 domain-separation change (leaf_hash now includes contract_id)"]
 fn test_leaf_hash_vectors() {
     let env = Env::default();
 
@@ -977,8 +971,13 @@ fn test_leaf_hash_vectors() {
 
     // Minimal JSON array parser — no external crate required.
     // Each element has the shape:
-    //   { "_comment": "...", "address": "G...", "amount": "123", "expected_leaf_hex": "abc..." }
-    // We extract address, amount (as string→i128), and expected_leaf_hex.
+    //   {
+    //     "_comment": "...",
+    //     "contract_id": "C...",
+    //     "address": "G... or C...",
+    //     "amount": "123",
+    //     "expected_leaf_hex": "abc..."
+    //   }
     for (i, chunk) in json_str
         .split('{')
         .skip(1) // skip the opening of the outer array
@@ -989,6 +988,8 @@ fn test_leaf_hash_vectors() {
             continue;
         }
 
+        let contract_id_str = extract_json_str(chunk, "contract_id")
+            .unwrap_or_else(|| panic!("vector {i}: missing 'contract_id' field"));
         let address = extract_json_str(chunk, "address")
             .unwrap_or_else(|| panic!("vector {i}: missing 'address' field"));
         let amount_str = extract_json_str(chunk, "amount")
@@ -1000,9 +1001,9 @@ fn test_leaf_hash_vectors() {
             .parse()
             .unwrap_or_else(|_| panic!("vector {i}: cannot parse amount '{amount_str}'"));
 
-        let addr = Address::from_str(&env, address);
-        // TODO: update contract_id once vectors are regenerated (see #[ignore] note above)
-        let actual = merkle::leaf_hash(&env, &addr, &addr, amount);
+        let contract_addr = Address::from_str(&env, contract_id_str);
+        let claimant_addr = Address::from_str(&env, address);
+        let actual = merkle::leaf_hash(&env, &contract_addr, &claimant_addr, amount);
 
         let expected_bytes = hex_decode(expected_hex)
             .unwrap_or_else(|| panic!("vector {i}: invalid hex in expected_leaf_hex"));
@@ -1016,7 +1017,8 @@ fn test_leaf_hash_vectors() {
 
         assert_eq!(
             actual, expected,
-            "vector {i} ({address}, {amount_str}): Rust leaf_hash does not match TypeScript SDK output"
+            "vector {i} (contract={contract_id_str}, address={address}, amount={amount_str}): \
+             Rust leaf_hash does not match TypeScript SDK output"
         );
     }
 }
