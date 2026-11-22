@@ -33,7 +33,7 @@
 
 #![no_std]
 
-mod merkle;
+pub mod merkle;
 mod types;
 
 #[cfg(test)]
@@ -57,7 +57,7 @@ contractmeta!(key = "Version", val = "0.1.0");
 /// 12_614_400 ledgers × 5 s/ledger = 63_072_000 s ≈ 2 years.
 /// Configurable via the `claimed_ttl` parameter in `initialize()`.
 const CLAIMED_TTL: u32 = 12_614_400;
-const CLAIMED_TTL_THRESHOLD: u32 = CLAIMED_TTL / 2;
+pub const CLAIMED_TTL_THRESHOLD: u32 = CLAIMED_TTL / 2;
 
 /// Default TTL for instance storage — ~2 years of ledgers (same magnitude as CLAIMED_TTL).
 ///
@@ -98,6 +98,7 @@ impl AirdropContract {
     ///                    Ledger ≈ 5 s; 12_614_400 × 5 s ≈ 2 years.
     /// * `instance_ttl` - Optional TTL (ledgers) for instance storage.
     ///                    Defaults to [`INSTANCE_TTL`] (~2 years) when `None`.
+    #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -126,6 +127,11 @@ impl AirdropContract {
 
         // Transfer tokens from admin into the contract.
         let token_client = TokenClient::new(&env, &token);
+        let _ = token_client
+            .try_decimals()
+            .map_err(|_| AirdropError::InvalidToken)?;
+
+        // Transfer tokens from admin into the contract.
         token_client.transfer(&admin, env.current_contract_address(), &total_amount);
 
         env.storage()
@@ -337,11 +343,7 @@ impl AirdropContract {
                 .instance()
                 .get(&DataKey::TokenAddress)
                 .ok_or(AirdropError::NotInitialized)?;
-            TokenClient::new(&env, &token).transfer(
-                &admin,
-                &env.current_contract_address(),
-                &diff,
-            );
+            TokenClient::new(&env, &token).transfer(&admin, env.current_contract_address(), &diff);
         }
 
         env.storage()
@@ -351,10 +353,8 @@ impl AirdropContract {
             .instance()
             .set(&DataKey::TotalDeposited, &new_total);
 
-        env.events().publish(
-            (symbol_short!("root_upd"), admin),
-            (new_root, new_total),
-        );
+        env.events()
+            .publish((symbol_short!("root_upd"), admin), (new_root, new_total));
 
         Ok(())
     }
@@ -381,10 +381,8 @@ impl AirdropContract {
 
         env.storage().instance().set(&DataKey::Admin, &new_admin);
 
-        env.events().publish(
-            (symbol_short!("adm_xfer"), old_admin),
-            new_admin,
-        );
+        env.events()
+            .publish((symbol_short!("adm_xfer"), old_admin), new_admin);
 
         Ok(())
     }
@@ -443,9 +441,7 @@ impl AirdropContract {
             .instance()
             .get::<_, u32>(&DataKey::InstanceTtl)
             .unwrap_or(INSTANCE_TTL);
-        env.storage()
-            .instance()
-            .extend_ttl(i_ttl / 2, i_ttl);
+        env.storage().instance().extend_ttl(i_ttl / 2, i_ttl);
     }
 
     /// Reclaim unclaimed tokens after the airdrop expires. Admin only.
@@ -482,8 +478,11 @@ impl AirdropContract {
             token_client.transfer(&env.current_contract_address(), &admin, &balance);
         }
 
+        // Emit enriched event: topic = ("reclaimed", admin), data = (balance, expiration).
+        // Including `expiration` lets indexers correlate reclaim events with the
+        // airdrop window and track reclaim history without a separate state query.
         env.events()
-            .publish((symbol_short!("reclaimed"), admin), balance);
+            .publish((symbol_short!("reclaimed"), admin), (balance, expiration));
 
         Ok(balance)
     }
@@ -568,6 +567,48 @@ impl AirdropContract {
             .unwrap_or(0)
     }
 
+    pub fn claimed_ttl(env: Env) -> u32 {
+        extend_instance_ttl(&env);
+        get_claimed_ttl(&env)
+    }
+
+    pub fn instance_ttl(env: Env) -> u32 {
+        extend_instance_ttl(&env);
+        get_instance_ttl(&env)
+    }
+
+    pub fn remaining_balance(env: Env) -> i128 {
+        extend_instance_ttl(&env);
+        if !env.storage().instance().has(&DataKey::MerkleRoot) {
+            return 0;
+        }
+        let Some(token) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::TokenAddress)
+        else {
+            return 0;
+        };
+        TokenClient::new(&env, &token).balance(&env.current_contract_address())
+    }
+
+    /// Return the sum of all tokens transferred via successful claims.
+    ///
+    /// Starts at 0 and grows by the claimed amount with each successful
+    /// `claim`, `claim_for`, or `batch_claim` entry.
+    ///
+    /// Refreshes instance storage TTL so dormant airdrops with no new claims
+    /// do not have their on-chain data archived.
+    pub fn total_claimed(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL);
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalClaimed)
+            .unwrap_or(0)
+    }
+
     /// Return the expiration timestamp (unix seconds) after which reclaim is allowed.
     ///
     /// Refreshes instance storage TTL so dormant airdrops with no new claims
@@ -643,6 +684,7 @@ impl AirdropContract {
 /// transfer — cannot drift apart. Returns `InvalidProof` for a proof that does
 /// not verify, and the caller decides whether that aborts one claim or a whole
 /// batch.
+#[allow(deprecated)]
 fn claim_entry(
     env: &Env,
     claimant: &Address,
@@ -698,11 +740,17 @@ fn claim_entry(
         .instance()
         .get(&DataKey::TokenAddress)
         .unwrap();
-    TokenClient::new(env, &token).transfer(
-        &env.current_contract_address(),
-        claimant,
-        &amount,
-    );
+    TokenClient::new(env, &token).transfer(&env.current_contract_address(), claimant, &amount);
+
+    // Update TotalClaimed counter.
+    let prev_claimed: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TotalClaimed)
+        .unwrap_or(0);
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalClaimed, &(prev_claimed + amount));
 
     env.events()
         .publish((symbol_short!("claimed"), claimant.clone()), amount);

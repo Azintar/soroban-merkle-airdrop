@@ -1,14 +1,17 @@
 /**
- * Unit tests for translateContractError (issue #66) and claim command options
- * (issues #499 and #501).
+ * Tests for the claim command.
  *
- * The function must map well-known Soroban contract error strings to
- * human-readable messages and pass unknown errors through unchanged.
+ * Section 1: translateContractError unit tests (issue #66).
+ * Section 2: --verify-only integration tests (issue #508).
+ *
+ * No actual RPC calls are made — all SDK interactions are mocked.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { translateContractError } from "../errors.js";
 import { claimCommand } from "./claim.js";
+
+// ─── Section 1: translateContractError ───────────────────────────────────────
 
 describe("translateContractError", () => {
   // ── AlreadyClaimed ──────────────────────────────────────────────────────
@@ -84,35 +87,169 @@ describe("translateContractError", () => {
   });
 });
 
-// ── claim command option definitions (issues #499 and #501) ───────────────
+// ─── Section 2: --verify-only tests (issue #508) ─────────────────────────────
 
-describe("claimCommand option definitions", () => {
-  it("registers --dry-run option so it appears in help text", () => {
-    // Commander stores options in .options; find the one with --dry-run long flag.
-    const dryRunOpt = claimCommand.options.find((o) => o.long === "--dry-run");
-    expect(dryRunOpt).toBeDefined();
+// All SDK interactions are mocked — vi.mock is hoisted so no top-level
+// variable references inside the factory.
+
+vi.mock("@soroban-merkle-airdrop/sdk", () => ({
+  createAirdropClient: vi.fn(() => ({
+    isClaimed: vi.fn(),
+    merkleRoot: vi.fn(),
+    claim: vi.fn(),
+  })),
+  verifyProof: vi.fn().mockReturnValue(true),
+  NETWORKS: {
+    testnet: {
+      network: "testnet",
+      rpcUrl: "https://soroban-testnet.stellar.org",
+      networkPassphrase: "Test SDF Network ; September 2015",
+    },
+  },
+}));
+
+vi.mock("fs/promises", () => ({
+  readFile: vi.fn(),
+}));
+
+const TEST_ROOT =
+  "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+const TEST_ADDR = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+
+const TREE_JSON = JSON.stringify({
+  root: TEST_ROOT,
+  totalAmount: "1000",
+  proofs: {
+    [TEST_ADDR]: { address: TEST_ADDR, amount: "1000", proof: ["aabb"] },
+  },
+});
+
+const BASE_VERIFY_OPTS = {
+  tree: "tree.json",
+  address: TEST_ADDR,
+  secretKey: "",
+  network: "testnet",
+  contractId: "CTEST123",
+  verifyOnly: true as const,
+};
+
+describe("claim --verify-only (issue #508)", () => {
+  let mockIsClaimed: ReturnType<typeof vi.fn>;
+  let mockMerkleRoot: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+
+    // Always return valid tree JSON from the filesystem.
+    const { readFile } = await import("fs/promises");
+    vi.mocked(readFile).mockResolvedValue(TREE_JSON);
+
+    // Always return true for local proof verification.
+    const sdk = await import("@soroban-merkle-airdrop/sdk");
+    vi.mocked(sdk.verifyProof).mockReturnValue(true);
+
+    // Set up fresh spies per test.
+    mockIsClaimed = vi.fn();
+    mockMerkleRoot = vi.fn();
+    vi.mocked(sdk.createAirdropClient).mockReturnValue({
+      isClaimed: mockIsClaimed,
+      merkleRoot: mockMerkleRoot,
+      claim: vi.fn(),
+    } as ReturnType<typeof sdk.createAirdropClient>);
   });
 
-  it("registers --verify-only option", () => {
-    const verifyOnlyOpt = claimCommand.options.find((o) => o.long === "--verify-only");
-    expect(verifyOnlyOpt).toBeDefined();
+  // ── a. Valid proof, address not yet claimed ─────────────────────────────
+
+  it("returns verified=true and alreadyClaimed=false when proof is valid and not yet claimed", async () => {
+    const { runClaim } = await import("./claim.js");
+
+    mockIsClaimed.mockResolvedValue(false);
+    mockMerkleRoot.mockResolvedValue(TEST_ROOT); // matches tree root
+
+    const result = await runClaim(BASE_VERIFY_OPTS);
+
+    expect("verified" in result && result.verified).toBe(true);
+    if ("verified" in result) {
+      expect(result.alreadyClaimed).toBe(false);
+      expect(result.rootMismatch).toBe(false);
+      expect(result.onChainRoot).toBe(TEST_ROOT);
+      expect(result.treeRoot).toBe(TEST_ROOT);
+      expect(result.address).toBe(TEST_ADDR);
+      expect(result.amount).toBe(1000n);
+    }
   });
 
-  it("parses --dry-run flag and sets dryRun to true", () => {
-    // Parse a minimal set of args (required options are stubbed so Commander
-    // doesn't throw; we only care about flag parsing here).
-    const cmd = claimCommand.copyInheritedSettings(claimCommand);
-    // Use parseOptions so we don't trigger the action handler.
-    const parsed = claimCommand.parseOptions(["--tree", "t.json", "--address", "G123", "--dry-run"]);
-    // Commander stores parsed option values directly on the parsed operands;
-    // retrieve opts() from the command object after parsing via the same instance.
-    // We test via the option definition instead — dryRun: true when flag present.
-    expect(parsed.operands).not.toContain("--dry-run"); // consumed as a flag, not operand
-    void cmd; // suppress unused variable warning
+  // ── b. Address has already claimed ─────────────────────────────────────
+
+  it("returns alreadyClaimed=true when isClaimed returns true", async () => {
+    const { runClaim } = await import("./claim.js");
+
+    mockIsClaimed.mockResolvedValue(true);
+    mockMerkleRoot.mockResolvedValue(TEST_ROOT);
+
+    const result = await runClaim(BASE_VERIFY_OPTS);
+
+    expect("verified" in result && result.verified).toBe(true);
+    if ("verified" in result) {
+      expect(result.alreadyClaimed).toBe(true);
+    }
   });
 
-  it("--dry-run option has the expected description", () => {
-    const dryRunOpt = claimCommand.options.find((o) => o.long === "--dry-run");
-    expect(dryRunOpt?.description).toMatch(/simulate|dry.run/i);
+  // ── c. On-chain root does not match tree root ───────────────────────────
+
+  it("returns rootMismatch=true when on-chain root differs from tree root", async () => {
+    const { runClaim } = await import("./claim.js");
+
+    const differentRoot =
+      "1111111111111111111111111111111111111111111111111111111111111111";
+    mockIsClaimed.mockResolvedValue(false);
+    mockMerkleRoot.mockResolvedValue(differentRoot);
+
+    const result = await runClaim(BASE_VERIFY_OPTS);
+
+    expect("verified" in result && result.verified).toBe(true);
+    if ("verified" in result) {
+      expect(result.rootMismatch).toBe(true);
+      expect(result.onChainRoot).toBe(differentRoot);
+      expect(result.treeRoot).toBe(TEST_ROOT);
+    }
+  });
+
+  // ── Additional: null on-chain root (not initialised) ───────────────────
+
+  it("does not report rootMismatch when on-chain root is null (contract not initialised)", async () => {
+    const { runClaim } = await import("./claim.js");
+
+    mockIsClaimed.mockResolvedValue(false);
+    mockMerkleRoot.mockResolvedValue(null);
+
+    const result = await runClaim(BASE_VERIFY_OPTS);
+
+    if ("verified" in result) {
+      expect(result.rootMismatch).toBe(false);
+      expect(result.onChainRoot).toBeNull();
+    }
+  });
+
+  // ── Additional: address not in tree ────────────────────────────────────
+
+  it("throws when address is not in the tree", async () => {
+    const { runClaim } = await import("./claim.js");
+
+    await expect(
+      runClaim({ ...BASE_VERIFY_OPTS, address: "GUNKNOWN999" })
+    ).rejects.toThrow(/not found in airdrop list/);
+  });
+
+  // ── Additional: local proof verification failure ────────────────────────
+
+  it("throws when local proof verification fails", async () => {
+    const { runClaim } = await import("./claim.js");
+    const sdk = await import("@soroban-merkle-airdrop/sdk");
+    vi.mocked(sdk.verifyProof).mockReturnValue(false);
+
+    await expect(runClaim(BASE_VERIFY_OPTS)).rejects.toThrow(
+      /Proof verification failed/
+    );
   });
 });

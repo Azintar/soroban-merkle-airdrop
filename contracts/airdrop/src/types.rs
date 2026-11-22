@@ -21,6 +21,12 @@ pub enum DataKey {
     Expiration,
     /// Count of successful claims.
     ClaimedCount,
+    /// Sum of all tokens transferred by successful claims.
+    TotalClaimed,
+    /// Configured TTL (ledgers) for per-claimant `Claimed` entries.
+    ClaimedTtl,
+    /// Configured TTL (ledgers) for instance storage.
+    InstanceTtl,
 }
 
 /// Errors returned by the airdrop contract.
@@ -44,6 +50,9 @@ pub enum AirdropError {
     /// `initialize()` called with an expiration timestamp that is already in
     /// the past (i.e. `expiration <= env.ledger().timestamp()`).
     ExpirationInPast = 8,
+    /// The supplied token address does not implement the SEP-41 interface.
+    /// Returned by `initialize()` when `token.decimals()` cannot be called.
+    InvalidToken = 9,
 }
 
 /// A snapshot of all contract instance state, returned by `contract_info()`.
