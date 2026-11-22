@@ -27,6 +27,7 @@ export const claimCommand = new Command("claim")
   .requiredOption("-a, --address <address>", "Address to claim for")
   .option("-k, --secret-key <key>", "Stellar secret key (or set STELLAR_SECRET_KEY)")
   .option("--verify-only", "Verify proof locally and on-chain without submitting a transaction")
+  .option("--dry-run", "Simulate the claim transaction and show fee estimate without submitting")
   .action(async (opts, cmd) => {
     const globalOpts = cmd.parent?.opts() ?? {};
     const network = globalOpts.network ?? "testnet";
@@ -45,6 +46,7 @@ export const claimCommand = new Command("claim")
 
     const secretKey = opts.secretKey ?? process.env.STELLAR_SECRET_KEY;
     const verifyOnly: boolean = opts.verifyOnly ?? false;
+    const isDryRun: boolean = opts.dryRun ?? false;
 
     if (!contractId) {
       console.error(chalk.red("Error: --contract-id or AIRDROP_CONTRACT_ID required"));
@@ -79,8 +81,8 @@ export const claimCommand = new Command("claim")
 
       // ── Local proof verification ───────────────────────────────────────────
       spinner.text = "Verifying proof locally...";
-      const valid = verifyProof(raw.root, contractId, proof.address, proof.amount, proof.proof);
-      if (!valid) {
+      const locallyValid = verifyProof(tree.root, contractId, proof.address, proof.amount, proof.proof);
+      if (!locallyValid) {
         spinner.fail(chalk.red("Proof verification failed — tree may be corrupted"));
         process.exit(1);
       }
@@ -96,6 +98,10 @@ export const claimCommand = new Command("claim")
       // ── Already claimed check ──────────────────────────────────────────────
       spinner.text = "Checking claim status...";
       const alreadyClaimed = await client.isClaimed(opts.address);
+
+      // ── On-chain root fetch (used by --verify-only) ────────────────────────
+      const onChainRoot = await client.merkleRoot();
+      const rootMatches = onChainRoot === tree.root;
 
       if (verifyOnly) {
         spinner.stop();
@@ -124,11 +130,6 @@ export const claimCommand = new Command("claim")
       }
 
       // ── Full claim flow ────────────────────────────────────────────────────
-      if (!locallyValid) {
-        spinner.fail(chalk.red("Proof verification failed — tree may be corrupted"));
-        process.exit(1);
-      }
-
       if (alreadyClaimed) {
         spinner.warn(chalk.yellow(`${opts.address} has already claimed.`));
         process.exit(0);

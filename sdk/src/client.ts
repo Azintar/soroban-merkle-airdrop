@@ -20,7 +20,7 @@ import {
   Account,
 } from "@stellar/stellar-sdk";
 import type { Transaction } from "@stellar/stellar-sdk";
-import type { ClaimProof, ClaimResult, NetworkConfig } from "./types.js";
+import type { ClaimProof, ClaimResult, NetworkConfig, SimulateClaimResult } from "./types.js";
 import { AirdropContractError, RpcError } from "./types.js";
 import { verifyProof } from "./merkle.js";
 
@@ -590,6 +590,7 @@ export function createAirdropClient(config: NetworkConfig) {
     expiration,
     remainingBalance,
     tokenDecimals,
+    simulateClaim,
     claim,
     buildClaimTransaction,
     submitSignedTransaction,

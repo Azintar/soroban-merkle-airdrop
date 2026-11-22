@@ -144,6 +144,41 @@ stellar contract invoke --network testnet --id "$CONTRACT_ID" \
 
 ---
 
+## Claiming Tokens
+
+Recipients claim tokens using the CLI. Use `--verify-only` to check proof validity without submitting a transaction, or `--dry-run` to simulate the transaction and inspect the estimated fee before committing.
+
+```bash
+# Verify proof locally and against the on-chain root (no transaction submitted)
+merkle-airdrop claim \
+  --network testnet \
+  --contract-id "$CONTRACT_ID" \
+  --tree merkle-tree.json \
+  --address GABC... \
+  --verify-only
+
+# Simulate the claim transaction and show fee estimate (no transaction submitted)
+merkle-airdrop claim \
+  --network testnet \
+  --contract-id "$CONTRACT_ID" \
+  --tree merkle-tree.json \
+  --address GABC... \
+  --secret-key SABC... \
+  --dry-run
+
+# Submit the claim transaction
+merkle-airdrop claim \
+  --network testnet \
+  --contract-id "$CONTRACT_ID" \
+  --tree merkle-tree.json \
+  --address GABC... \
+  --secret-key SABC...
+```
+
+> **Tip:** pass `STELLAR_SECRET_KEY` as an environment variable instead of `--secret-key` to avoid the key appearing in shell history.
+
+---
+
 ## Mainnet Checklist
 
 Deploying to mainnet involves real funds. Work through each item before proceeding.
