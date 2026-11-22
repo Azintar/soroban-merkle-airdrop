@@ -2918,3 +2918,75 @@ fn test_upgrade_uninitialized_fails() {
         Err(Ok(AirdropError::NotInitialized))
     );
 }
+
+// ─── Issue #466: InvalidToken error on initialize ────────────────────────────
+
+/// A plain contract that does not implement the SEP-41 interface has no
+/// `decimals` function.  `initialize()` calls `token_client.try_decimals()`,
+/// which returns an `Err` for any non-token contract.  The error must be
+/// translated to `AirdropError::InvalidToken`.
+///
+/// We register the AirdropContract itself as the "token" address — it is a
+/// real, registered contract but it has no `decimals` entrypoint, which is
+/// sufficient to trigger the validation failure.
+#[test]
+fn test_initialize_invalid_token_fails() {
+    let (env, admin, _token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    // Register a second AirdropContract as the "invalid token" — it has no
+    // `decimals` function, so try_decimals() will fail.
+    let invalid_token = env.register(AirdropContract, ());
+
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+
+    // We must supply a positive amount and a future expiration so the earlier
+    // guards do not trigger before we reach the try_decimals() call.
+    let result = client.try_initialize(
+        &admin,
+        &invalid_token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    assert_eq!(
+        result,
+        Err(Ok(AirdropError::InvalidToken)),
+        "initialize() with a non-token contract address must return InvalidToken"
+    );
+}
+
+/// Confirm that the normal `initialize()` path still succeeds when a valid
+/// SEP-41 token is supplied.  This is the complement to
+/// `test_initialize_invalid_token_fails` and guards against an accidental
+/// regression that might break all airdrop deployments.
+#[test]
+fn test_initialize_valid_token_succeeds() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+
+    // A real Stellar Asset Contract implements SEP-41; try_decimals() succeeds.
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    // The contract must be fully initialised and active.
+    assert_eq!(client.token(), Some(token.clone()));
+    assert_eq!(client.admin(), Some(admin.clone()));
+    assert!(client.is_active());
+    assert_eq!(client.total_deposited(), 1500);
+}
