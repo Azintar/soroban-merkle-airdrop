@@ -1870,6 +1870,88 @@ fn test_reclaim_zero_balance_after_all_claimed() {
     );
 }
 
+// ─── Issue #463: Reclaim after partial claims ────────────────────────────────
+
+/// reclaim() after only some recipients have claimed must return
+/// `total_deposited - claimed_so_far`, not the full `total_deposited`.
+///
+/// Setup: 3-entry tree with amounts (100, 200, 300), total deposited = 600.
+/// Only the first entry (100) is claimed before expiration.
+/// After advancing past expiration, reclaim() must return 500 and transfer
+/// exactly 500 tokens to the admin.
+///
+/// Closes #463
+#[test]
+fn test_reclaim_partial_claims() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let token_client = TokenClient::new(&env, &token);
+
+    // Build a 3-entry Merkle tree.
+    let claimant0 = Address::generate(&env);
+    let claimant1 = Address::generate(&env);
+    let claimant2 = Address::generate(&env);
+
+    let amounts: alloc::vec::Vec<i128> = alloc::vec![100, 200, 300];
+    let total: i128 = 600; // 100 + 200 + 300
+
+    let (root, proofs) = build_n_leaf_tree(
+        &env,
+        &contract_id,
+        &[claimant0.clone(), claimant1.clone(), claimant2.clone()],
+        &amounts,
+    );
+
+    mint(&env, &token, &admin, &admin, total);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &total,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    // Only claimant0 claims their 100-token allocation.
+    client.claim(&claimant0, &100, &proofs[0]);
+
+    // Contract must now hold 500 (600 deposited − 100 claimed).
+    assert_eq!(
+        token_client.balance(&contract_id),
+        500,
+        "contract must hold 500 tokens after one partial claim"
+    );
+
+    // Record admin balance before reclaim so we can assert the transfer amount.
+    let admin_balance_before = token_client.balance(&admin);
+
+    // Advance ledger past expiration to unlock reclaim().
+    env.ledger().set_timestamp(DEFAULT_EXPIRATION);
+
+    // reclaim() must return the remaining balance, NOT the full total_deposited.
+    let reclaimed = client.reclaim();
+    assert_eq!(
+        reclaimed, 500,
+        "reclaim() return value must equal total_deposited - claimed_so_far (500 = 600 - 100)"
+    );
+
+    // Admin must have received exactly 500 tokens.
+    let admin_balance_after = token_client.balance(&admin);
+    assert_eq!(
+        admin_balance_after - admin_balance_before,
+        500,
+        "admin token balance must increase by 500 after partial-claim reclaim"
+    );
+
+    // Contract must now be empty.
+    assert_eq!(
+        token_client.balance(&contract_id),
+        0,
+        "contract must hold 0 tokens after reclaim"
+    );
+}
+
 // ─── Issue #108: Token conservation invariant ────────────────────────────────
 
 /// Build a Merkle tree for `n` claimants and return the root + per-claimant proofs.
