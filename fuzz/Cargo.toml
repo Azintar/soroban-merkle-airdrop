@@ -4,6 +4,9 @@ version = "0.0.0"
 publish = false
 edition = "2021"
 
+# Standalone crate: cargo-fuzz builds it separately from the root workspace.
+[workspace]
+
 [package.metadata]
 cargo-fuzz = true
 

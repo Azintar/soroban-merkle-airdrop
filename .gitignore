@@ -20,3 +20,9 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# cargo-fuzz output (corpus grows in the CI cache, not in git)
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
+fuzz/target/
