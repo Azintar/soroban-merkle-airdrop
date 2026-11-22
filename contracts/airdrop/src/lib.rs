@@ -192,27 +192,6 @@ impl AirdropContract {
             claim_entry(&env, &entry.claimant, entry.amount, &proof)?;
         }
 
-        // Mark as claimed before transfer (re-entrancy guard).
-        env.storage().persistent().set(&claimed_key, &true);
-        env.storage()
-            .persistent()
-            .extend_ttl(&claimed_key, CLAIMED_TTL_THRESHOLD, CLAIMED_TTL);
-
-        // Transfer tokens to claimant.
-        let token: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::TokenAddress)
-            .unwrap();
-        TokenClient::new(&env, &token).transfer(
-            &env.current_contract_address(),
-            &claimant,
-            &amount,
-        );
-
-        env.events()
-            .publish((symbol_short!("claimed"), claimant.clone()), amount);
-
         Ok(())
     }
 
