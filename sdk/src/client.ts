@@ -13,9 +13,29 @@ import {
   Keypair,
   Address,
   Account,
-  Networks,
 } from "@stellar/stellar-sdk";
 import type { ClaimProof, ClaimResult, NetworkConfig } from "./types.js";
+
+/** Result returned from setActive(). */
+export interface SetActiveResult {
+  txHash: string;
+}
+
+/** Result returned from reclaim(). */
+export interface ReclaimResult {
+  txHash: string;
+  amount: bigint;
+}
+
+/** Result returned from simulateClaim(). */
+export interface SimulateClaimResult {
+  fee: string;
+  resources: {
+    instructions: number;
+    readBytes: number;
+    writeBytes: number;
+  };
+}
 
 export function createAirdropClient(config: NetworkConfig) {
   const server = new rpc.Server(config.rpcUrl, { allowHttp: false });
@@ -116,6 +136,152 @@ export function createAirdropClient(config: NetworkConfig) {
     }
   }
 
+  /**
+   * Activate or deactivate the airdrop contract.
+   *
+   * @param active - `true` to activate, `false` to pause.
+   * @param signerSecretKey - Admin Stellar secret key (S...).
+   */
+  async function setActive(
+    active: boolean,
+    signerSecretKey: string
+  ): Promise<SetActiveResult> {
+    const keypair = Keypair.fromSecret(signerSecretKey);
+    const sourceAccount = await server.getAccount(keypair.publicKey());
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(
+        contractInst.call("set_active", nativeToScVal(active, { type: "bool" }))
+      )
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new Error(`Simulation failed: ${simResult.error}`);
+    }
+
+    const preparedTx = rpc.assembleTransaction(tx, simResult).build();
+    preparedTx.sign(keypair);
+
+    const sendResult = await server.sendTransaction(preparedTx);
+    if (sendResult.status === "ERROR") {
+      throw new Error(`Transaction failed: ${sendResult.errorResult?.toXDR("base64")}`);
+    }
+
+    const txHash = sendResult.hash;
+    while (true) {
+      await sleep(2000);
+      const poll = await server.getTransaction(txHash);
+      if (poll.status === "SUCCESS") {
+        return { txHash };
+      }
+      if (poll.status === "FAILED") {
+        throw new Error(`Transaction failed on-chain: ${txHash}`);
+      }
+    }
+  }
+
+  /**
+   * Reclaim undistributed tokens after the airdrop expires.
+   *
+   * @param signerSecretKey - Admin Stellar secret key (S...).
+   */
+  async function reclaim(signerSecretKey: string): Promise<ReclaimResult> {
+    const keypair = Keypair.fromSecret(signerSecretKey);
+    const sourceAccount = await server.getAccount(keypair.publicKey());
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(contractInst.call("reclaim"))
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new Error(`Simulation failed: ${simResult.error}`);
+    }
+
+    const preparedTx = rpc.assembleTransaction(tx, simResult).build();
+    preparedTx.sign(keypair);
+
+    const sendResult = await server.sendTransaction(preparedTx);
+    if (sendResult.status === "ERROR") {
+      throw new Error(`Transaction failed: ${sendResult.errorResult?.toXDR("base64")}`);
+    }
+
+    const txHash = sendResult.hash;
+    while (true) {
+      await sleep(2000);
+      const poll = await server.getTransaction(txHash);
+      if (poll.status === "SUCCESS") {
+        // Extract the returned i128 amount from the transaction result.
+        const retval = (poll as rpc.Api.GetSuccessfulTransactionResponse).returnValue;
+        const amount = retval ? BigInt(scValToNative(retval) as bigint) : 0n;
+        return { txHash, amount };
+      }
+      if (poll.status === "FAILED") {
+        throw new Error(`Transaction failed on-chain: ${txHash}`);
+      }
+    }
+  }
+
+  /**
+   * Simulate a claim transaction without submitting it.
+   * Useful for --dry-run mode: estimate fees and resource usage.
+   *
+   * @param claimProof - The proof package from `buildMerkleTree`.
+   * @param publicKey  - The claimant's Stellar public key (G...).
+   */
+  async function simulateClaim(
+    claimProof: ClaimProof,
+    publicKey: string
+  ): Promise<SimulateClaimResult> {
+    const proofScVal = xdr.ScVal.scvVec(
+      claimProof.proof.map((h) => xdr.ScVal.scvBytes(Buffer.from(h, "hex")))
+    );
+
+    const dummy = Keypair.random();
+    const account = new Account(dummy.publicKey(), "0");
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(
+        contractInst.call(
+          "claim",
+          new Address(publicKey).toScVal(),
+          nativeToScVal(claimProof.amount, { type: "i128" }),
+          proofScVal
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new Error(`Simulation failed: ${simResult.error}`);
+    }
+
+    const success = simResult as rpc.Api.SimulateTransactionSuccessResponse;
+    const txData = success.transactionData.build();
+    const resources = txData.resources();
+
+    return {
+      fee: success.minResourceFee ?? "0",
+      resources: {
+        instructions: resources.instructions(),
+        readBytes: resources.readBytes(),
+        writeBytes: resources.writeBytes(),
+      },
+    };
+  }
+
   async function simulateRead(operation: xdr.Operation): Promise<xdr.ScVal> {
     const dummy = Keypair.random();
     const account = new Account(dummy.publicKey(), "0");
@@ -138,5 +304,5 @@ export function createAirdropClient(config: NetworkConfig) {
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  return { isClaimed, isActive, merkleRoot, totalDeposited, claim };
+  return { isClaimed, isActive, merkleRoot, totalDeposited, claim, setActive, reclaim, simulateClaim };
 }
