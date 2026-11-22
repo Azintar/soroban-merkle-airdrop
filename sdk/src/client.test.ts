@@ -40,6 +40,9 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
     Contract: vi.fn().mockImplementation(() => ({
       call: vi.fn().mockReturnValue({}),
     })),
+    Address: vi.fn().mockImplementation(() => ({
+      toScVal: vi.fn().mockReturnValue({}),
+    })),
     TransactionBuilder: vi.fn().mockImplementation(() => ({
       addOperation: vi.fn().mockReturnThis(),
       setTimeout: vi.fn().mockReturnThis(),
@@ -326,5 +329,88 @@ describe("formatAmount (Issue #58)", () => {
     const { formatAmount } = await import("./index.js");
     // 15000 with 7 decimals = 0.0015000
     expect(formatAmount(15000n, 7)).toBe("0.0015000");
+  });
+});
+
+// ─── Issue #498: claimFor() method ─────────────────────────────────────────
+
+// A valid-format Stellar G-address for claimFor tests (56-char strkey).
+const VALID_CLAIMANT = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
+const CLAIMFOR_PROOF = {
+  address: VALID_CLAIMANT,
+  amount: 1000n,
+  proof: [],
+};
+
+describe("createAirdropClient — claimFor() (Issue #498)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("submits a transaction calling claim_for and returns ClaimResult with claimant address", async () => {
+    const client = createAirdropClient({ ...BASE_CONFIG, pollTimeoutMs: 5000 });
+    const server = await getMockServer();
+
+    // The operator (not the claimant) is the transaction source.
+    server.getAccount.mockResolvedValue({ id: "GOPERATOR123", sequenceNumber: () => "0" });
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: {} },
+      transactionData: {},
+      minResourceFee: "100",
+    });
+    server.sendTransaction.mockResolvedValue({ status: "PENDING", hash: "claimfor-hash" });
+    server.getTransaction
+      .mockResolvedValueOnce({ status: "NOT_FOUND" })
+      .mockResolvedValueOnce({ status: "SUCCESS" });
+
+    const result = await client.claimFor(CLAIMFOR_PROOF, "STEST123");
+
+    expect(result.success).toBe(true);
+    expect(result.txHash).toBe("claimfor-hash");
+    // Tokens go to the claimant's address, not the operator.
+    expect(result.address).toBe(CLAIMFOR_PROOF.address);
+    expect(result.amount).toBe(CLAIMFOR_PROOF.amount);
+  }, 15_000);
+
+  it("throws RpcError with timeout message when pollTimeoutMs is exceeded in claimFor()", async () => {
+    const client = createAirdropClient({ ...BASE_CONFIG, pollTimeoutMs: 100 });
+    const server = await getMockServer();
+
+    server.getAccount.mockResolvedValue({ id: "GOPERATOR123", sequenceNumber: () => "0" });
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: {} },
+      transactionData: {},
+      minResourceFee: "100",
+    });
+    server.sendTransaction.mockResolvedValue({ status: "PENDING", hash: "claimfor-timeout" });
+    server.getTransaction.mockResolvedValue({ status: "NOT_FOUND" });
+
+    await expect(
+      client.claimFor(CLAIMFOR_PROOF, "STEST123")
+    ).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(RpcError);
+      const message = (err as RpcError).message;
+      expect(message).toMatch(/Transaction confirmation timeout after 100ms/);
+      expect(message).toContain("claimfor-timeout");
+      return true;
+    });
+  }, 10_000);
+
+  it("throws RpcError when sendTransaction returns ERROR in claimFor()", async () => {
+    const client = createAirdropClient(BASE_CONFIG);
+    const server = await getMockServer();
+
+    server.getAccount.mockResolvedValue({ id: "GOPERATOR123", sequenceNumber: () => "0" });
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: {} },
+      transactionData: {},
+      minResourceFee: "100",
+    });
+    server.sendTransaction.mockResolvedValue({
+      status: "ERROR",
+      errorResult: { toXDR: () => "base64xdr" },
+    });
+
+    await expect(client.claimFor(CLAIMFOR_PROOF, "STEST123")).rejects.toBeInstanceOf(RpcError);
   });
 });
