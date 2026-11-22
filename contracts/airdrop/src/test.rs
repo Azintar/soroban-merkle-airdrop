@@ -2135,6 +2135,97 @@ fn test_claim_for_invalid_proof_fails() {
     );
 }
 
+// ─── Issue #471: claim_for after expiration ────────────────────────────────
+
+/// claim_for() must keep working after the airdrop expires but before the
+/// admin reclaims. claim_entry() gates neither on expiration nor on the
+/// caller's identity (the Merkle proof is the sole authorisation), so an
+/// operator can still push a claimant's tokens through claim_for() in that
+/// window — mirroring the coverage claim() already has via
+/// test_claim_succeeds_after_expiration_before_reclaim.
+///
+/// Tokens must land in the claimant's wallet, never the operator's.
+#[test]
+fn test_claim_for_succeeds_after_expiration_before_reclaim() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let operator = Address::generate(&env);
+
+    let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    // Advance the ledger to exactly the expiration timestamp.
+    env.ledger().set_timestamp(DEFAULT_EXPIRATION);
+
+    // The claimant has not claimed yet.
+    assert!(!client.is_claimed(&claimant));
+
+    let claimant_balance_before = TokenClient::new(&env, &token).balance(&claimant);
+    let operator_balance_before = TokenClient::new(&env, &token).balance(&operator);
+
+    // Operator submits the claim; the claimant never signs.
+    client.claim_for(&claimant, &1000, &proof);
+
+    // Tokens must land in the claimant's wallet — not the operator's.
+    assert_eq!(
+        TokenClient::new(&env, &token).balance(&claimant),
+        claimant_balance_before + 1000,
+        "claimant must receive 1000 tokens after expiration, before reclaim"
+    );
+    assert_eq!(
+        TokenClient::new(&env, &token).balance(&operator),
+        operator_balance_before,
+        "operator must not receive any tokens"
+    );
+    assert!(client.is_claimed(&claimant));
+}
+
+/// Once the admin has reclaimed, the contract's token balance is zero and a
+/// claim_for() cannot pay out. The SEP-41 token contract rejects the
+/// transfer from the zero-balance contract account and the invocation
+/// panics — same behaviour as claim() in
+/// test_claim_panics_after_reclaim_empties_contract.
+#[test]
+#[should_panic]
+fn test_claim_for_panics_after_reclaim() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, proof, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    // Advance past expiration and let the admin drain the contract.
+    env.ledger().set_timestamp(DEFAULT_EXPIRATION);
+    let reclaimed = client.reclaim();
+    assert_eq!(reclaimed, 1500);
+    assert_eq!(TokenClient::new(&env, &token).balance(&admin), 1500);
+    assert!(!client.is_claimed(&claimant));
+
+    // The contract now holds zero tokens, so the payout transfer fails
+    // inside the token contract and the invocation panics.
+    client.claim_for(&claimant, &1000, &proof);
+}
+
 /// Regular claim followed by claim_for for the same address must fail.
 #[test]
 fn test_claim_then_claim_for_fails() {
