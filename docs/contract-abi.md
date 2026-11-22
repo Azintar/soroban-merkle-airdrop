@@ -57,7 +57,7 @@ topic: (Symbol("init"), Address(admin))
 data:  (BytesN<32>(merkle_root), i128(total_amount))
 ```
 
-**Errors:** `AlreadyInitialized` (1), `ZeroAmount` (6)
+**Errors:** `AlreadyInitialized` (1), `ZeroAmount` (6), `ExpirationInPast` (8), `InvalidToken` (9)
 
 ---
 
@@ -237,6 +237,8 @@ Errors are represented as `u32` values in the contract spec XDR.
 | `5`  | `NotInitialized`    | `initialize()` has not been called yet.                                           |
 | `6`  | `ZeroAmount`        | Zero or negative amount supplied to `initialize()` or `claim()`.                  |
 | `7`  | `NotYetExpired`     | `reclaim()` called before the expiration timestamp has been reached.              |
+| `8`  | `ExpirationInPast`  | `initialize()` called with `expiration <= env.ledger().timestamp()`.              |
+| `9`  | `InvalidToken`      | The supplied token address does not implement the SEP-41 interface (`decimals()` call failed). |
 
 ---
 
