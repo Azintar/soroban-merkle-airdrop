@@ -96,26 +96,38 @@ claim time with the same TTL.
 
 ### Leaf hash
 
-A leaf encodes one `(address, amount)` allocation:
+A leaf encodes one `(contract_id, address, amount)` triple. The contract address
+acts as a domain separator so that a proof valid on one deployment cannot be
+replayed against a second deployment sharing the same Merkle root. See
+[docs/replay-attack-analysis.md](replay-attack-analysis.md) for the full
+threat analysis.
 
 ```
-leaf = SHA-256( SHA-256(strkey_utf8_bytes(address)) ++ amount_be16 )
+leaf = SHA-256(
+         SHA-256(strkey_utf8_bytes(contract))
+      ++ SHA-256(strkey_utf8_bytes(address))
+      ++ amount_be16
+       )
 ```
 
 Step by step:
 
-1. Convert the claimant `Address` to its Stellar strkey string
+1. Convert the **contract** `Address` to its Stellar strkey string
+   (e.g. `CABC…` for Soroban contracts).
+2. Take the **UTF-8 bytes** of that string and hash with **SHA-256**
+   → 32-byte `contract_hash` (domain separator).
+3. Convert the **claimant** `Address` to its Stellar strkey string
    (e.g. `GABC…` for accounts, `CABC…` for contracts).
-2. Take the **UTF-8 bytes** of that string.
-3. Hash with **SHA-256** → 32-byte `addr_hash`.
-4. Encode `amount` as a **16-byte big-endian** `i128`.
-5. Concatenate `addr_hash ++ amount_be16` (48 bytes total).
-6. Hash with **SHA-256** → 32-byte leaf.
+4. Take the **UTF-8 bytes** of that string and hash with **SHA-256**
+   → 32-byte `addr_hash`.
+5. Encode `amount` as a **16-byte big-endian** `i128`.
+6. Concatenate `contract_hash ++ addr_hash ++ amount_be16` (80 bytes total).
+7. Hash with **SHA-256** → 32-byte leaf.
 
-The double-hash is required because Soroban's `Address` type does not expose
-raw public-key bytes inside contract code. Hashing the strkey UTF-8 string is
-the stable, canonical substitute. Both the Rust contract (`merkle.rs`) and the
-TypeScript SDK (`sdk/src/merkle.ts`) must implement this identically.
+The per-address double-hash is required because Soroban's `Address` type does
+not expose raw public-key bytes inside contract code. Hashing the strkey UTF-8
+string is the stable, canonical substitute. Both the Rust contract (`merkle.rs`)
+and the TypeScript SDK (`sdk/src/merkle.ts`) must implement this identically.
 
 ### Node hash
 
@@ -159,7 +171,7 @@ the node-hash formula and comparing the final value to the stored root.
    ├─ check Active flag
    ├─ check amount > 0
    ├─ check Claimed(claimant) not set
-   ├─ recompute leaf = leaf_hash(claimant, amount)
+   ├─ recompute leaf = leaf_hash(contract_id, claimant, amount)
    ├─ verify_proof(root, leaf, proof) — walk proof, recompute root
    ├─ set Claimed(claimant) = true    — re-entrancy guard before transfer
    └─ SEP-41 transfer(contract → claimant, amount)
