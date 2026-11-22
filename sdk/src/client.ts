@@ -25,6 +25,21 @@ import { AirdropContractError, RpcError } from "./types.js";
 import { verifyProof } from "./merkle.js";
 
 /**
+ * The public API surface returned by {@link createAirdropClient}.
+ *
+ * Consumers can use this type to annotate variables or parameters that hold a
+ * client instance:
+ *
+ * @example
+ * ```ts
+ * import type { AirdropClient } from '@soroban-merkle-airdrop/sdk';
+ *
+ * function displayStatus(client: AirdropClient) { ... }
+ * ```
+ */
+export type AirdropClient = ReturnType<typeof createAirdropClient>;
+
+/**
  * Create a typed client for an on-chain soroban-merkle-airdrop contract.
  *
  * All RPC calls are made against the `rpcUrl` and `networkPassphrase` specified
@@ -654,6 +669,7 @@ export function createAirdropClient(config: NetworkConfig) {
     expiration,
     remainingBalance,
     tokenDecimals,
+    claimedCount,
     claim,
     buildClaimTransaction,
     submitSignedTransaction,

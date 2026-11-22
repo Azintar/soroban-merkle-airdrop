@@ -20,6 +20,7 @@ export { buildMerkleTree, leafHash, hashPair, verifyProof, isAddressInTree } fro
 
 // ─── Contract client ─────────────────────────────────────────────────────────
 export { createAirdropClient } from "./client.js";
+export type { AirdropClient } from "./client.js";
 
 // ─── Fetch utility ───────────────────────────────────────────────────────────
 export { fetchMerkleTree, validateMerkleTreeFile } from "./fetch.js";
