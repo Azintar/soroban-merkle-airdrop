@@ -213,6 +213,74 @@ export function createAirdropClient(config: NetworkConfig) {
     }
   }
 
+  /**
+   * Update the Merkle root and total deposited amount (admin only).
+   *
+   * Calls the contract's `update_merkle_root(new_root, new_total)` to rotate
+   * the distribution tree — for example after a top-up or tree rebuild.
+   *
+   * @param newRoot         - The new Merkle root as a 64-character hex string (32 bytes).
+   * @param newTotal        - New total token amount in base units.
+   * @param signerSecretKey - The admin's Stellar secret key (S...).
+   * @returns `{ txHash }` on success.
+   */
+  async function updateMerkleRoot(
+    newRoot: string,
+    newTotal: bigint,
+    signerSecretKey: string
+  ): Promise<{ txHash: string }> {
+    if (newRoot.length !== 64) {
+      throw new RpcError("newRoot must be a 64-character hex string (32 bytes)");
+    }
+
+    const keypair = Keypair.fromSecret(signerSecretKey);
+    const sourceAccount = await server.getAccount(keypair.publicKey());
+
+    const rootScVal = xdr.ScVal.scvBytes(Buffer.from(newRoot, "hex"));
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(
+        contractInst.call(
+          "update_merkle_root",
+          rootScVal,
+          nativeToScVal(newTotal, { type: "i128" })
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simResult)) {
+      const contractCode = parseContractErrorCode(simResult.error);
+      if (contractCode !== null) throw new AirdropContractError(contractCode);
+      throw new RpcError(`Simulation failed: ${simResult.error}`);
+    }
+
+    const preparedTx = rpc.assembleTransaction(tx, simResult).build();
+    preparedTx.sign(keypair);
+
+    const sendResult = await server.sendTransaction(preparedTx);
+    if (sendResult.status === "ERROR") {
+      throw new RpcError(
+        `Transaction submission failed`,
+        sendResult.errorResult?.toXDR("base64")
+      );
+    }
+
+    const txHash = sendResult.hash;
+    while (true) {
+      await sleep(2000);
+      const poll = await server.getTransaction(txHash);
+      if (poll.status === "SUCCESS") return { txHash };
+      if (poll.status === "FAILED") {
+        throw new RpcError(`Transaction failed on-chain: ${txHash}`);
+      }
+    }
+  }
+
   async function simulateRead(operation: xdr.Operation): Promise<xdr.ScVal> {
     const dummy = Keypair.random();
     const account = new Account(dummy.publicKey(), "0");
@@ -235,7 +303,7 @@ export function createAirdropClient(config: NetworkConfig) {
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  return { isClaimed, isActive, merkleRoot, totalDeposited, claim, buildClaimTransaction, submitSignedTransaction };
+  return { isClaimed, isActive, merkleRoot, totalDeposited, claim, buildClaimTransaction, submitSignedTransaction, updateMerkleRoot };
 }
 
 /**
