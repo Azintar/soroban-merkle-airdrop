@@ -191,6 +191,42 @@ export interface ClaimResult {
   amount: bigint;
 }
 
+// ─── Amount formatting ───────────────────────────────────────────────────────
+
+/**
+ * Format a raw token amount into a human-readable decimal string using the
+ * token's decimal precision.
+ *
+ * For example, with `decimals = 7`:
+ * - `1_000_000_0n` → `"1.0000000"`
+ * - `15000n`       → `"0.0015000"`
+ *
+ * @param raw      - Raw token amount in base units.
+ * @param decimals - Number of decimal places (from SEP-41 `decimals()`).
+ * @returns Formatted decimal string.
+ *
+ * @example
+ * ```ts
+ * import { formatAmount } from '@soroban-merkle-airdrop/sdk';
+ *
+ * const decimals = await client.tokenDecimals();
+ * if (decimals !== null) {
+ *   console.log(formatAmount(1_000_000_0n, decimals)); // "1.0000000"
+ * }
+ * ```
+ */
+export function formatAmount(raw: bigint, decimals: number): string {
+  if (decimals === 0) return raw.toString();
+
+  const factor = 10n ** BigInt(decimals);
+  const whole = raw / factor;
+  const fraction = raw % factor;
+
+  // Pad fraction with leading zeros to fill `decimals` digits.
+  const fracStr = fraction.toString().padStart(decimals, "0");
+  return `${whole}.${fracStr}`;
+}
+
 // ─── Error types ─────────────────────────────────────────────────────────────
 
 /**
@@ -215,16 +251,24 @@ export interface ClaimResult {
  * ```
  */
 export enum AirdropError {
+  /** Contract has already been initialised — `initialize()` may only be called once. */
+  AlreadyInitialized = 1,
   /** The address has already submitted a successful claim. */
-  AlreadyClaimed = 1,
+  AlreadyClaimed = 2,
   /** The supplied Merkle proof does not verify against the on-chain root. */
-  InvalidProof = 2,
-  /** The airdrop contract is not currently active. */
-  AirdropInactive = 3,
-  /** The contract does not hold enough tokens to pay the claim. */
-  InsufficientFunds = 4,
-  /** The caller is not authorised to perform this action. */
-  Unauthorized = 5,
+  InvalidProof = 3,
+  /** The airdrop contract is not currently active (paused by admin). */
+  NotActive = 4,
+  /** Contract has not been initialised yet — `initialize()` has not been called. */
+  NotInitialized = 5,
+  /** Zero or negative amount supplied to `initialize()` or `claim()`. */
+  ZeroAmount = 6,
+  /** `reclaim()` called before the expiration timestamp has been reached. */
+  NotYetExpired = 7,
+  /** `initialize()` called with an expiration timestamp already in the past. */
+  ExpirationInPast = 8,
+  /** The supplied token address does not implement the SEP-41 interface. */
+  InvalidToken = 9,
 }
 
 /**
@@ -268,12 +312,16 @@ export class AirdropContractError extends Error {
 
   private static defaultMessage(code: number): string {
     switch (code) {
-      case AirdropError.AlreadyClaimed:    return "Address has already claimed";
-      case AirdropError.InvalidProof:      return "Invalid Merkle proof";
-      case AirdropError.AirdropInactive:   return "Airdrop is not active";
-      case AirdropError.InsufficientFunds: return "Insufficient contract funds";
-      case AirdropError.Unauthorized:      return "Unauthorized";
-      default:                             return `Contract error (code ${code})`;
+      case AirdropError.AlreadyInitialized: return "Contract has already been initialised";
+      case AirdropError.AlreadyClaimed:     return "Address has already claimed";
+      case AirdropError.InvalidProof:       return "Invalid Merkle proof";
+      case AirdropError.NotActive:          return "Airdrop is not active";
+      case AirdropError.NotInitialized:     return "Contract has not been initialised";
+      case AirdropError.ZeroAmount:         return "Amount must be greater than zero";
+      case AirdropError.NotYetExpired:      return "Airdrop has not expired yet";
+      case AirdropError.ExpirationInPast:   return "Expiration timestamp is in the past";
+      case AirdropError.InvalidToken:       return "Token does not implement SEP-41";
+      default:                              return `Contract error (code ${code})`;
     }
   }
 }
@@ -315,3 +363,68 @@ export class RpcError extends Error {
     Object.setPrototypeOf(this, RpcError.prototype);
   }
 }
+
+// ─── Contract event types ─────────────────────────────────────────────────
+
+/**
+ * Emitted by `initialize()` once the airdrop has been set up.
+ *
+ * Topic:  [Symbol("init"), admin: Address]
+ * Data:   { merkleRoot: Buffer(32), totalAmount: bigint }
+ */
+export interface InitEvent {
+  /** The admin address that initialized the airdrop. */
+  admin: string;
+  /** The 32-byte Merkle root as a hex string. */
+  merkleRoot: string;
+  /** Total tokens deposited into the contract (in base units). */
+  totalAmount: bigint;
+}
+
+/**
+ * Emitted by `claim()` each time a claimant successfully claims tokens.
+ *
+ * Topic:  [Symbol("claimed"), claimant: Address]
+ * Data:   amount: i128
+ */
+export interface ClaimedEvent {
+  /** The address that claimed tokens. */
+  claimant: string;
+  /** The amount of tokens claimed (in base units). */
+  amount: bigint;
+}
+
+/**
+ * Emitted by `reclaim()` after the admin recovers unclaimed tokens post-expiry.
+ *
+ * Topic:  [Symbol("reclaimed"), admin: Address]
+ * Data:   balance: i128
+ */
+export interface ReclaimedEvent {
+  /** The admin address that reclaimed the tokens. */
+  admin: string;
+  /** The token balance reclaimed (in base units). */
+  balance: bigint;
+}
+
+/**
+ * Emitted by `set_active()` whenever the airdrop is paused or unpaused.
+ *
+ * Note: the on-chain event symbol is `"paused"` (not `"set_active"`).
+ *
+ * Topic:  [Symbol("paused"), admin: Address]
+ * Data:   active: bool
+ */
+export interface PausedEvent {
+  /** The admin address that changed the active state. */
+  admin: string;
+  /** The new active state: `true` = active (unpaused), `false` = paused. */
+  active: boolean;
+}
+
+/** Union of all events the airdrop contract can emit. */
+export type AirdropEvent =
+  | { type: "init";      data: InitEvent     }
+  | { type: "claimed";   data: ClaimedEvent  }
+  | { type: "reclaimed"; data: ReclaimedEvent }
+  | { type: "paused";    data: PausedEvent   };
