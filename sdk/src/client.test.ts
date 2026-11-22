@@ -40,11 +40,20 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
     Contract: vi.fn().mockImplementation(() => ({
       call: vi.fn().mockReturnValue({}),
     })),
-    TransactionBuilder: vi.fn().mockImplementation(() => ({
-      addOperation: vi.fn().mockReturnThis(),
-      setTimeout: vi.fn().mockReturnThis(),
-      build: vi.fn().mockReturnValue({ sign: vi.fn(), toXDR: vi.fn() }),
+    Address: vi.fn().mockImplementation(() => ({
+      toScVal: vi.fn().mockReturnValue({}),
     })),
+    TransactionBuilder: Object.assign(
+      vi.fn().mockImplementation(() => ({
+        addOperation: vi.fn().mockReturnThis(),
+        setTimeout: vi.fn().mockReturnThis(),
+        build: vi.fn().mockReturnValue({ sign: vi.fn(), toXDR: vi.fn() }),
+      })),
+      {
+        // Static method needed by submitSignedTransaction
+        fromXDR: vi.fn().mockReturnValue({ sign: vi.fn(), toXDR: vi.fn() }),
+      }
+    ),
     Account: vi.fn().mockImplementation(() => ({})),
     Keypair: {
       ...actual.Keypair,

@@ -38,4 +38,4 @@ export type {
   PausedEvent,
   AirdropEvent,
 } from "./types.js";
-export { NETWORKS, AirdropError, AirdropContractError, RpcError } from "./types.js";
+export { NETWORKS, AirdropError, AirdropContractError, RpcError, formatAmount } from "./types.js";
