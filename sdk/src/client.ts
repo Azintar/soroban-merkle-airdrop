@@ -17,6 +17,16 @@ import {
 } from "@stellar/stellar-sdk";
 import type { ClaimProof, ClaimResult, NetworkConfig } from "./types.js";
 
+/** Result returned from simulateClaim(). */
+export interface SimulateClaimResult {
+  fee: string;
+  resources: {
+    instructions: number;
+    readBytes: number;
+    writeBytes: number;
+  };
+}
+
 export function createAirdropClient(config: NetworkConfig) {
   const server = new rpc.Server(config.rpcUrl, { allowHttp: false });
   const contractInst = new Contract(config.contractId);
@@ -116,6 +126,57 @@ export function createAirdropClient(config: NetworkConfig) {
     }
   }
 
+  /**
+   * Simulate a claim transaction without submitting it.
+   * Useful for --dry-run mode: estimate fees and resource usage.
+   *
+   * @param claimProof - The proof package from `buildMerkleTree`.
+   * @param publicKey  - The claimant's Stellar public key (G...).
+   */
+  async function simulateClaim(
+    claimProof: ClaimProof,
+    publicKey: string
+  ): Promise<SimulateClaimResult> {
+    const proofScVal = xdr.ScVal.scvVec(
+      claimProof.proof.map((h) => xdr.ScVal.scvBytes(Buffer.from(h, "hex")))
+    );
+
+    const dummy = Keypair.random();
+    const account = new Account(dummy.publicKey(), "0");
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(
+        contractInst.call(
+          "claim",
+          new Address(publicKey).toScVal(),
+          nativeToScVal(claimProof.amount, { type: "i128" }),
+          proofScVal
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simResult)) {
+      throw new Error(`Simulation failed: ${simResult.error}`);
+    }
+
+    const success = simResult as rpc.Api.SimulateTransactionSuccessResponse;
+    const txData = success.transactionData.build();
+    const resources = txData.resources();
+
+    return {
+      fee: success.minResourceFee ?? "0",
+      resources: {
+        instructions: resources.instructions(),
+        readBytes: resources.readBytes(),
+        writeBytes: resources.writeBytes(),
+      },
+    };
+  }
+
   async function simulateRead(operation: xdr.Operation): Promise<xdr.ScVal> {
     const dummy = Keypair.random();
     const account = new Account(dummy.publicKey(), "0");
@@ -138,5 +199,5 @@ export function createAirdropClient(config: NetworkConfig) {
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  return { isClaimed, isActive, merkleRoot, totalDeposited, claim };
+  return { isClaimed, isActive, merkleRoot, totalDeposited, claim, simulateClaim };
 }
