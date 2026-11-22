@@ -20,9 +20,24 @@ import {
   Account,
 } from "@stellar/stellar-sdk";
 import type { Transaction } from "@stellar/stellar-sdk";
-import type { ClaimProof, ClaimResult, NetworkConfig } from "./types.js";
+import type { ClaimProof, ClaimResult, NetworkConfig, SimulateClaimResult } from "./types.js";
 import { AirdropContractError, RpcError } from "./types.js";
 import { verifyProof } from "./merkle.js";
+
+/**
+ * The public API surface returned by {@link createAirdropClient}.
+ *
+ * Consumers can use this type to annotate variables or parameters that hold a
+ * client instance:
+ *
+ * @example
+ * ```ts
+ * import type { AirdropClient } from '@soroban-merkle-airdrop/sdk';
+ *
+ * function displayStatus(client: AirdropClient) { ... }
+ * ```
+ */
+export type AirdropClient = ReturnType<typeof createAirdropClient>;
 
 /**
  * Create a typed client for an on-chain soroban-merkle-airdrop contract.
@@ -133,6 +148,69 @@ export function createAirdropClient(config: NetworkConfig) {
   async function claimedCount(): Promise<number> {
     const result = await simulateRead(contractInst.call("claimed_count"));
     return scValToNative(result) as number;
+  }
+
+  /**
+   * Fetch the total tokens distributed through successful claims.
+   *
+   * This metric starts at 0 when the airdrop is initialised and grows
+   * by the claimed amount with every successful `claim`, `claim_for`, or
+   * `batch_claim` entry. Use it alongside {@link totalDeposited} to
+   * calculate a progress ratio for dashboards.
+   *
+   * @returns Total claimed amount in base units (stroops for XLM-based tokens).
+   *
+   * @example
+   * ```ts
+   * const claimed = await client.totalClaimed();
+   * const total = await client.totalDeposited();
+   * const pct = Number(claimed * 100n / total);
+   * console.log(`${pct}% of tokens claimed`);
+   * ```
+   */
+  async function totalClaimed(): Promise<bigint> {
+    const result = await simulateRead(contractInst.call("total_claimed"));
+    return BigInt(scValToNative(result) as number);
+  }
+
+  /**
+   * Fetch the total tokens claimed so far from the airdrop contract.
+   *
+   * @returns Total claimed amount in base units, or `null` if the contract
+   *   has not been initialised or does not expose this value.
+   *
+   * @example
+   * ```ts
+   * const claimed = await client.totalClaimed();
+   * console.log("Total claimed:", claimed?.toString());
+   * ```
+   */
+  async function totalClaimed(): Promise<bigint | null> {
+    try {
+      const result = await simulateRead(contractInst.call("total_claimed"));
+      const native = scValToNative(result);
+      if (native === null || native === undefined) return null;
+      return BigInt(native as number);
+    } catch {
+      // Contract may not expose total_claimed; treat as best-effort.
+      return null;
+    }
+  }
+
+  /**
+   * Fetch the total tokens claimed so far from the airdrop contract.
+   *
+   * @returns Total claimed amount in base units.
+   *
+   * @example
+   * ```ts
+   * const claimed = await client.totalClaimed();
+   * console.log("Claimed so far:", claimed.toString());
+   * ```
+   */
+  async function totalClaimed(): Promise<bigint> {
+    const result = await simulateRead(contractInst.call("total_claimed"));
+    return BigInt(scValToNative(result) as number);
   }
 
   /**
@@ -384,6 +462,104 @@ export function createAirdropClient(config: NetworkConfig) {
   }
 
   /**
+   * Claim tokens on behalf of a recipient without requiring the recipient's
+   * signature (operator-pays model).
+   *
+   * Calls the contract's `claim_for` entry point. The operator signs and pays
+   * the transaction fees; tokens are always sent to `claimProof.address`, not
+   * to the operator. The Merkle proof binds the `(claimant, amount)` pair to
+   * the on-chain root, so an operator cannot redirect tokens to themselves.
+   *
+   * @param claimProof          - The proof package for the claimant, from `buildMerkleTree`.
+   * @param operatorSecretKey   - The operator's Stellar secret key (S...). The operator
+   *                              pays network fees; the claimant does **not** sign.
+   * @returns A {@link ClaimResult} with the on-chain transaction hash and claimed amount.
+   * @throws {@link AirdropContractError} if the contract rejects the claim.
+   * @throws {@link RpcError} for network-level failures or polling timeouts.
+   *
+   * @example
+   * ```ts
+   * // Operator pays fees; tokens land in claimProof.address
+   * const result = await client.claimFor(proof, operatorSecretKey);
+   * console.log("Claimed in tx:", result.txHash);
+   * console.log("Token recipient:", result.address); // claimant, not operator
+   * ```
+   */
+  async function claimFor(
+    claimProof: ClaimProof,
+    operatorSecretKey: string
+  ): Promise<ClaimResult> {
+    const operatorKeypair = Keypair.fromSecret(operatorSecretKey);
+    const sourceAccount = await server.getAccount(operatorKeypair.publicKey());
+
+    const proofScVal = xdr.ScVal.scvVec(
+      claimProof.proof.map((h) => {
+        const bytes = Buffer.from(h, "hex");
+        return xdr.ScVal.scvBytes(bytes);
+      })
+    );
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(
+        contractInst.call(
+          "claim_for",
+          new Address(claimProof.address).toScVal(),
+          nativeToScVal(claimProof.amount, { type: "i128" }),
+          proofScVal
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simResult)) {
+      const contractCode = parseContractErrorCode(simResult.error);
+      if (contractCode !== null) {
+        throw new AirdropContractError(contractCode);
+      }
+      throw new RpcError(`Simulation failed: ${simResult.error}`);
+    }
+
+    const preparedTx = rpc.assembleTransaction(tx, simResult).build();
+    preparedTx.sign(operatorKeypair);
+
+    const sendResult = await server.sendTransaction(preparedTx);
+    if (sendResult.status === "ERROR") {
+      throw new RpcError(
+        `Transaction submission failed`,
+        sendResult.errorResult?.toXDR("base64")
+      );
+    }
+
+    const txHash = sendResult.hash;
+    const deadline = Date.now() + pollTimeoutMs;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      await sleep(2000);
+      if (Date.now() >= deadline) {
+        throw new RpcError(
+          `Transaction confirmation timeout after ${pollTimeoutMs}ms: ${txHash}`
+        );
+      }
+      const poll = await server.getTransaction(txHash);
+      if (poll.status === "SUCCESS") {
+        return {
+          success: true,
+          txHash,
+          address: claimProof.address,
+          amount: claimProof.amount,
+        };
+      }
+      if (poll.status === "FAILED") {
+        throw new RpcError(`Transaction failed on-chain: ${txHash}`);
+      }
+    }
+  }
+
+  /**
    * Build an unsigned claim transaction XDR string for external signing
    * (e.g. via a browser wallet like Freighter).
    *
@@ -587,10 +763,13 @@ export function createAirdropClient(config: NetworkConfig) {
     isActive,
     merkleRoot,
     totalDeposited,
+    totalClaimed,
     expiration,
     remainingBalance,
     tokenDecimals,
+    claimedCount,
     claim,
+    claimFor,
     buildClaimTransaction,
     submitSignedTransaction,
     verifyClaimProof,

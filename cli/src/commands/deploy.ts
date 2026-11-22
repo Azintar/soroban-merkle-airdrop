@@ -33,6 +33,7 @@ import {
   Address,
   Contract,
 } from "@stellar/stellar-sdk";
+import { validateSecretKey } from "../validation.js";
 
 // ─── RPC preset URLs ─────────────────────────────────────────────────────────
 
@@ -57,6 +58,10 @@ export interface DeployOptions {
   network: string;
   rpcUrl?: string;
   dryRun?: boolean;
+  claimedTtl?: number;
+  instanceTtl?: number;
+  /** Override polling interval in ms. Defaults to 2000. Used in tests to skip waits. */
+  pollIntervalMs?: number;
 }
 
 export interface DeployResult {
@@ -80,6 +85,7 @@ export async function programmaticDeploy(opts: DeployOptions): Promise<DeployRes
   const { wasm, token, tree: treePath, expiration, secretKey, network } = opts;
   const rpcUrl = opts.rpcUrl ?? RPC_URLS[network];
   const networkPassphrase = NETWORK_PASSPHRASES[network];
+  const pollIntervalMs = opts.pollIntervalMs ?? POLL_INTERVAL_MS;
 
   if (!rpcUrl) throw new Error(`Unknown network: ${network}. Use testnet or mainnet.`);
   if (!networkPassphrase) throw new Error(`No passphrase for network: ${network}`);
@@ -131,7 +137,7 @@ export async function programmaticDeploy(opts: DeployOptions): Promise<DeployRes
     );
   }
 
-  const wasmHash = await pollTransactionSuccess(server, uploadResult.hash);
+  const wasmHash = await pollTransactionSuccess(server, uploadResult.hash, pollIntervalMs);
   // The return value from uploadContractWasm is the wasm hash bytes.
   const wasmHashHex = extractReturnValue(wasmHash);
 
@@ -168,7 +174,7 @@ export async function programmaticDeploy(opts: DeployOptions): Promise<DeployRes
     );
   }
 
-  const deployTxResult = await pollTransactionSuccess(server, deployResult.hash);
+  const deployTxResult = await pollTransactionSuccess(server, deployResult.hash, pollIntervalMs);
   const contractId = extractContractIdFromResult(deployTxResult);
 
   // ── Step 3: Initialize contract ──────────────────────────────────────────
@@ -177,6 +183,14 @@ export async function programmaticDeploy(opts: DeployOptions): Promise<DeployRes
   const contractInst = new Contract(contractId);
   const merkleRootBytes = Buffer.from(merkleRoot.replace(/^0x/, ""), "hex");
 
+  // Encode optional TTL values: pass the numeric value or ScVal void (Option::None).
+  const claimedTtlScVal = opts.claimedTtl !== undefined
+    ? nativeToScVal(opts.claimedTtl, { type: "u32" })
+    : nativeToScVal(null, { type: "option" });
+  const instanceTtlScVal = opts.instanceTtl !== undefined
+    ? nativeToScVal(opts.instanceTtl, { type: "u32" })
+    : nativeToScVal(null, { type: "option" });
+
   const initTx = new TransactionBuilder(accountAfterDeploy, {
     fee: BASE_FEE,
     networkPassphrase,
@@ -184,11 +198,13 @@ export async function programmaticDeploy(opts: DeployOptions): Promise<DeployRes
     .addOperation(
       contractInst.call(
         "initialize",
-        new Address(keypair.publicKey()).toScVal(),      // admin
-        new Address(token).toScVal(),                    // token
-        xdr.ScVal.scvBytes(merkleRootBytes),             // merkle_root: BytesN<32>
-        nativeToScVal(totalAmount, { type: "i128" }),    // total_amount: i128
-        nativeToScVal(BigInt(expiration), { type: "u64" }) // expiration: u64
+        new Address(keypair.publicKey()).toScVal(),         // admin
+        new Address(token).toScVal(),                       // token
+        xdr.ScVal.scvBytes(merkleRootBytes),                // merkle_root: BytesN<32>
+        nativeToScVal(totalAmount, { type: "i128" }),       // total_amount: i128
+        nativeToScVal(BigInt(expiration), { type: "u64" }), // expiration: u64
+        claimedTtlScVal,                                    // claimed_ttl: Option<u32>
+        instanceTtlScVal                                    // instance_ttl: Option<u32>
       )
     )
     .setTimeout(60)
@@ -209,7 +225,7 @@ export async function programmaticDeploy(opts: DeployOptions): Promise<DeployRes
     );
   }
 
-  await pollTransactionSuccess(server, initResult.hash);
+  await pollTransactionSuccess(server, initResult.hash, pollIntervalMs);
 
   return { contractId, wasmHash: wasmHashHex, network };
 }
@@ -221,12 +237,13 @@ const POLL_INTERVAL_MS = 2_000;
 
 async function pollTransactionSuccess(
   server: StellarRpc.Server,
-  txHash: string
+  txHash: string,
+  intervalMs: number = POLL_INTERVAL_MS
 ): Promise<StellarRpc.Api.GetSuccessfulTransactionResponse> {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    await sleep(POLL_INTERVAL_MS);
+    await sleep(intervalMs);
     if (Date.now() >= deadline) {
       throw new Error(`Transaction confirmation timeout after ${POLL_TIMEOUT_MS}ms: ${txHash}`);
     }
@@ -299,6 +316,8 @@ export const deployCommand = new Command("deploy")
   .requiredOption("--token <address>", "SEP-41 token contract address to distribute")
   .requiredOption("-t, --tree <file>", "Merkle tree JSON (output of generate)")
   .requiredOption("-e, --expiration <timestamp>", "Unix timestamp after which reclaim is permitted")
+  .option("--claimed-ttl <ledgers>", "TTL in ledgers for claimed entries (default: contract default)", parseInt)
+  .option("--instance-ttl <ledgers>", "TTL in ledgers for contract instance (default: contract default)", parseInt)
   .option("-k, --secret-key <key>", "Deployer secret key (or set STELLAR_SECRET_KEY)")
   .option("--dry-run", "Print equivalent Stellar CLI commands instead of executing")
   .action(async (opts, cmd) => {
@@ -340,7 +359,10 @@ export const deployCommand = new Command("deploy")
         `       --token ${opts.token} \\\n` +
         `       --merkle_root ${treeRoot} \\\n` +
         `       --total_amount ${treeTotal} \\\n` +
-        `       --expiration ${opts.expiration}\n`
+        `       --expiration ${opts.expiration}` +
+        (opts.claimedTtl !== undefined ? ` \\\n       --claimed_ttl ${opts.claimedTtl}` : "") +
+        (opts.instanceTtl !== undefined ? ` \\\n       --instance_ttl ${opts.instanceTtl}` : "") +
+        "\n"
       ));
 
       console.log(chalk.green("See docs/deploying.md for full instructions.\n"));
@@ -348,23 +370,24 @@ export const deployCommand = new Command("deploy")
     }
 
     // ── Live deploy ─────────────────────────────────────────────────────────
-    if (!secretKey) {
-      console.error(chalk.red("Error: --secret-key or STELLAR_SECRET_KEY is required for deployment"));
-      process.exit(1);
-    }
 
     const spinner = ora("Deploying airdrop contract…").start();
 
     try {
+
+      const validatedSecretKey = validateSecretKey(secretKey, "deploy");
+
       spinner.text = "Uploading WASM…";
       const result = await programmaticDeploy({
         wasm: opts.wasm,
         token: opts.token,
         tree: opts.tree,
         expiration: opts.expiration,
-        secretKey,
+        secretKey: validatedSecretKey,
         network,
         rpcUrl,
+        claimedTtl: opts.claimedTtl,
+        instanceTtl: opts.instanceTtl,
       });
 
       spinner.succeed(chalk.green("Deployment complete!"));

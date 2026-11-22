@@ -179,7 +179,7 @@ function handleError(err: unknown): never {
       console.error("  ❌ This address has already claimed its tokens.");
     } else if (err.code === AirdropError.InvalidProof) {
       console.error("  ❌ Proof rejected by the contract. Tree may not match the deployed contract.");
-    } else if (err.code === AirdropError.AirdropInactive) {
+    } else if (err.code === AirdropError.NotActive) {
       console.error("  ❌ The airdrop is no longer active.");
     } else {
       console.error(`  ❌ Contract error (code ${err.code}): ${err.message}`);

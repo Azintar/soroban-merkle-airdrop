@@ -10,6 +10,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { createAirdropClient, NETWORKS } from "@soroban-merkle-airdrop/sdk";
 import type { NetworkConfig } from "@soroban-merkle-airdrop/sdk";
+import { validateSecretKey } from "../validation.js";
 
 // ---------------------------------------------------------------------------
 // Shared helper — builds a NetworkConfig from the root program options.
@@ -60,10 +61,13 @@ export const pauseCommand = new Command("pause")
     const spinner = ora("Pausing airdrop...").start();
 
     try {
+
+      const validatedSecretKey = validateSecretKey(opts.adminKey, "pause");
+
       const config = resolveNetworkConfig(opts);
       const client = createAirdropClient(config);
 
-      const { txHash } = await client.setActive(false, opts.adminKey);
+      const { txHash } = await client.setActive(false, validatedSecretKey);
 
       spinner.succeed(chalk.green("Airdrop paused successfully."));
       console.log(`\n  ${chalk.bold("Tx hash:")} ${chalk.cyan(txHash)}\n`);
@@ -90,10 +94,12 @@ export const unpauseCommand = new Command("unpause")
     const spinner = ora("Unpausing airdrop...").start();
 
     try {
+      const validatedSecretKey = validateSecretKey(opts.adminKey, "unpause");
+
       const config = resolveNetworkConfig(opts);
       const client = createAirdropClient(config);
 
-      const { txHash } = await client.setActive(true, opts.adminKey);
+      const { txHash } = await client.setActive(true, validatedSecretKey);
 
       spinner.succeed(chalk.green("Airdrop unpaused successfully."));
       console.log(`\n  ${chalk.bold("Tx hash:")} ${chalk.cyan(txHash)}\n`);
