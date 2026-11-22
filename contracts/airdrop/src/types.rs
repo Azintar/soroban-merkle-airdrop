@@ -51,6 +51,7 @@ pub enum AirdropError {
     /// the past (i.e. `expiration <= env.ledger().timestamp()`).
     ExpirationInPast = 8,
     /// The supplied token address does not implement the SEP-41 interface.
+    /// Returned by `initialize()` when `token.decimals()` cannot be called.
     InvalidToken = 9,
 }
 
