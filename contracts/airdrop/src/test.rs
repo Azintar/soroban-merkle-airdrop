@@ -1704,6 +1704,91 @@ fn test_snapshot_merkle_root_5_entries() {
 /// Decode a 64-character lowercase hex string into a [u8; 32] array.
 /// Panics on invalid input. Used only in golden-value tests so the constant
 /// expected values can be written as readable hex strings.
+// ─── Issue #473: update_merkle_root updates total_deposited ─────────────────
+
+/// update_merkle_root with new_total > current must transfer the difference
+/// in and update total_deposited() to reflect new_total.
+#[test]
+fn test_update_merkle_root_updates_total_deposited() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    // Set up a two-leaf tree and initialise with 1000 tokens.
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 2000); // mint extra to cover the top-up
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1000,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+    assert_eq!(client.total_deposited(), 1000);
+
+    // Build a new root (content doesn't matter for this assertion) and top up
+    // to 1500 — the diff of 500 must be transferred in automatically.
+    let new_claimant = Address::generate(&env);
+    let (new_root, _, _) =
+        build_two_leaf_tree(&env, &contract_id, &new_claimant, 1200, &admin, 300);
+
+    client.update_merkle_root(&new_root, &1500);
+
+    // total_deposited() must now reflect the new total.
+    assert_eq!(
+        client.total_deposited(),
+        1500,
+        "total_deposited() must equal new_total after update_merkle_root"
+    );
+}
+
+/// update_merkle_root with new_total <= current must NOT transfer any tokens
+/// (admin balance stays the same) while still updating total_deposited.
+#[test]
+fn test_update_merkle_root_no_topup_when_total_unchanged() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let token_client = TokenClient::new(&env, &token);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    // Record admin balance after initialise (initialize transferred 1500 out).
+    let admin_balance_before = token_client.balance(&admin);
+
+    // Update with new_total == current — no transfer should occur.
+    let new_claimant = Address::generate(&env);
+    let (new_root, _, _) =
+        build_two_leaf_tree(&env, &contract_id, &new_claimant, 1000, &admin, 500);
+    client.update_merkle_root(&new_root, &1500);
+
+    assert_eq!(
+        token_client.balance(&admin),
+        admin_balance_before,
+        "admin balance must be unchanged when new_total == current total_deposited"
+    );
+
+    // Also verify with new_total < current (reducing allocation).
+    client.update_merkle_root(&new_root, &1000);
+    assert_eq!(
+        token_client.balance(&admin),
+        admin_balance_before,
+        "admin balance must be unchanged when new_total < current total_deposited"
+    );
+}
+
 fn hex_to_array_32(hex: &str) -> [u8; 32] {
     assert_eq!(hex.len(), 64, "expected 64 hex chars (32 bytes)");
     let mut out = [0u8; 32];
