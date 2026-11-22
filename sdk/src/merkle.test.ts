@@ -717,3 +717,41 @@ describe("buildMerkleTree — 1000 entries", () => {
     expect(verified).toBe(1000);
   }, 5000);
 });
+
+// ─── Issue #478: verifyProof smoke test against contract-generated root ───────
+//
+// This block will verify that verifyProof() produces the same result when the
+// root and proof originate from a simulated on-chain claim_entry call
+// (end-to-end parity between the TypeScript SDK and the Rust contract).
+//
+// The test uses a single vector from test-vectors/leaf-hash-vectors.json.
+// It is marked .todo until the vectors are regenerated with a contract_id
+// field present (see issue for the bitmap-tracked regeneration task).
+// Once vectors include contract_id the .todo annotation and this comment
+// should be removed and the test body uncommented.
+describe("verifyProof — against contract-generated root", () => {
+  // Unblock after test vector regeneration — see issue for bitmap-tracked issue.
+  it.todo(
+    "verifyProof returns true for a proof built from a contract-generated root (vector 0)"
+    // Once test-vectors/leaf-hash-vectors.json includes contract_id, replace
+    // this .todo with the body below:
+    //
+    // const vectors = JSON.parse(readFileSync(resolve(process.cwd(), "../test-vectors/leaf-hash-vectors.json"), "utf8"));
+    // const v = vectors.find((vec: { contract_id?: string }) => vec.contract_id);
+    // if (!v) throw new Error("No vector with contract_id found — regenerate test vectors");
+    //
+    // const { root, proofs } = buildMerkleTree(v.contract_id, [
+    //   { address: v.address, amount: BigInt(v.amount) },
+    // ]);
+    // const proof = proofs.get(v.address)!;
+    //
+    // expect(
+    //   verifyProof(root, v.contract_id, v.address, BigInt(v.amount), proof.proof)
+    // ).toBe(true);
+    //
+    // // Cross-check: the leaf hash must match the expected value from the vector.
+    // expect(leafHash(v.contract_id, v.address, BigInt(v.amount)).toString("hex")).toBe(
+    //   v.expected_leaf_hex
+    // );
+  );
+});
