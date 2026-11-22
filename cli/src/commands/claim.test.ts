@@ -9,6 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { translateContractError } from "../errors.js";
+import { claimCommand } from "./claim.js";
 
 // ─── Section 1: translateContractError ───────────────────────────────────────
 
