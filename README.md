@@ -128,7 +128,8 @@ pnpm add @soroban-merkle-airdrop/sdk
 import { buildMerkleTree, createAirdropClient, NETWORKS } from '@soroban-merkle-airdrop/sdk';
 
 // Build a Merkle tree from your airdrop list
-const { root, proofs } = buildMerkleTree([
+// contractId is the deployed airdrop contract address (C...).
+const { root, proofs } = buildMerkleTree("CCONTRACT...", [
   { address: "GABC...", amount: 1000n },
   { address: "GDEF...", amount: 500n },
 ]);
