@@ -7,13 +7,18 @@
  *
  * # Leaf hash
  *
- *   SHA-256( SHA-256(address_strkey_utf8_bytes) ++ amount_big_endian[16] )
+ *   1. addr_hash = SHA-256(UTF-8 bytes of the Stellar strkey string)
+ *   2. leaf      = SHA-256(addr_hash ++ amount as 16-byte big-endian i128)
  *
  * The address is hashed as its Stellar strkey string (e.g. `G...` for
  * accounts, `C...` for contracts) encoded as UTF-8 bytes — NOT as raw
  * decoded key bytes. This matches the Rust contract's `merkle::leaf_hash`
  * which calls `claimant.to_string()` to obtain the strkey and then
  * SHA-256-hashes the resulting bytes.
+ *
+ * Note: only the claimant address and amount are included in the leaf hash.
+ * The contract address is not part of this computation. See `leafHash` for
+ * the authoritative per-function description.
  *
  * # Node hash
  *   SHA-256(min(left, right) ++ max(left, right))
