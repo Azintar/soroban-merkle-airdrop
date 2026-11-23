@@ -1791,6 +1791,57 @@ fn test_update_merkle_root_no_topup_when_total_unchanged() {
     );
 }
 
+/// update_merkle_root() must succeed even when the contract is paused (Active = false).
+///
+/// The function checks admin auth and new_total > 0 but does not gate on
+/// DataKey::Active. This is intentional — see the update_merkle_root doc comment:
+/// root rotation is permitted while paused, allowing admins to update the
+/// distribution tree during a maintenance pause without first unpausing.
+#[test]
+fn test_update_merkle_root_while_paused() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    // Initialise with a two-leaf tree.
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 2000);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1000,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    // Pause the contract.
+    client.set_active(&false);
+    assert!(!client.is_active(), "contract should be paused");
+
+    // Build a new root to rotate to.
+    let new_claimant = Address::generate(&env);
+    let (new_root, _, _) =
+        build_two_leaf_tree(&env, &contract_id, &new_claimant, 800, &admin, 200);
+
+    // update_merkle_root must succeed while paused.
+    client.update_merkle_root(&new_root, &1000);
+
+    // The root must have been updated.
+    assert_eq!(
+        client.merkle_root(),
+        Some(new_root.clone()),
+        "merkle_root() must return the new root after update_merkle_root while paused"
+    );
+
+    // The contract must still be paused — update_merkle_root must not change Active.
+    assert!(
+        !client.is_active(),
+        "is_active() must remain false after update_merkle_root while paused"
+    );
+}
+
 fn hex_to_array_32(hex: &str) -> [u8; 32] {
     assert_eq!(hex.len(), 64, "expected 64 hex chars (32 bytes)");
     let mut out = [0u8; 32];
