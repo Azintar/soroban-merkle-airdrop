@@ -1,0 +1,22 @@
+[package]
+name = "soroban-merkle-airdrop-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+soroban-sdk = { version = "27.0.6", features = ["testutils"] }
+soroban-merkle-airdrop = { path = "../contracts/airdrop" }
+
+[dev-dependencies]
+soroban-sdk = { version = "27.0.6", features = ["testutils"] }
+
+[[bin]]
+name = "leaf_hash"
+path = "fuzz_targets/leaf_hash.rs"
+test = false
+doc = false
