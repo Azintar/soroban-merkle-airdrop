@@ -1946,6 +1946,99 @@ fn test_pre_init_total_deposited_returns_zero() {
     );
 }
 
+// ─── Issue #457: total_claimed counter accumulation ──────────────────────────
+
+/// total_claimed() returns 0 immediately after initialisation, before any
+/// address has submitted a claim.
+#[test]
+fn test_total_claimed_starts_at_zero() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+
+    assert_eq!(
+        client.total_claimed(),
+        0,
+        "total_claimed() must be 0 right after initialization"
+    );
+}
+
+/// total_claimed() accumulates correctly across three sequential claims.
+///
+/// Three claimants with amounts 100, 200, and 300 each claim in sequence.
+/// After all three, total_claimed() must equal the sum 600.
+#[test]
+fn test_total_claimed_increments_per_claim() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+
+    let claimant0 = Address::generate(&env);
+    let claimant1 = Address::generate(&env);
+    let claimant2 = Address::generate(&env);
+
+    let claimants = [claimant0.clone(), claimant1.clone(), claimant2.clone()];
+    let amounts: [i128; 3] = [100, 200, 300];
+    let total: i128 = 600;
+
+    let (root, proofs) = build_n_leaf_tree(&env, &contract_id, &claimants, &amounts);
+
+    mint(&env, &token, &admin, &admin, total);
+    client.initialize(&admin, &token, &root, &total, &DEFAULT_EXPIRATION, &None, &None);
+
+    // No claims yet.
+    assert_eq!(client.total_claimed(), 0);
+
+    client.claim(&claimant0, &100, &proofs[0]);
+    assert_eq!(client.total_claimed(), 100, "after first claim (100)");
+
+    client.claim(&claimant1, &200, &proofs[1]);
+    assert_eq!(client.total_claimed(), 300, "after second claim (100+200)");
+
+    client.claim(&claimant2, &300, &proofs[2]);
+    assert_eq!(
+        client.total_claimed(),
+        600,
+        "after all three claims (100+200+300)"
+    );
+}
+
+/// A failed claim — one with a bad proof — must not change total_claimed().
+#[test]
+fn test_total_claimed_not_affected_by_failed_claim() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let other = Address::generate(&env);
+
+    // Build a tree for claimant (1000) and other (500).
+    let (root, _proof_claimant, proof_other) =
+        build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &other, 500);
+
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+
+    assert_eq!(client.total_claimed(), 0, "initial total_claimed must be 0");
+
+    // Submit other's proof while claiming as claimant — this will fail.
+    let result = client.try_claim(&claimant, &500, &proof_other);
+    assert_eq!(
+        result,
+        Err(Ok(AirdropError::InvalidProof)),
+        "claim with wrong proof must return InvalidProof"
+    );
+
+    // total_claimed must remain 0 — the failed claim must not increment it.
+    assert_eq!(
+        client.total_claimed(),
+        0,
+        "total_claimed() must be unchanged after a failed claim"
+    );
+}
+
 /// On a freshly registered, uninitialised contract:
 ///   - is_claimed(any_addr) → false
 ///
