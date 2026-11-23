@@ -4,19 +4,25 @@ version = "0.0.0"
 publish = false
 edition = "2021"
 
+# Standalone crate: cargo-fuzz builds it separately from the root workspace.
+[workspace]
+
 [package.metadata]
 cargo-fuzz = true
 
 [dependencies]
+# cargo-fuzz injects the libfuzzer-sys crate automatically via the nightly
+# toolchain build. We declare it explicitly so editors and IDEs do not flag
+# the `fuzz_target!` macro as unknown.
 libfuzzer-sys = "0.4"
-soroban-sdk = { version = "27.0.6", features = ["testutils"] }
-soroban-merkle-airdrop = { path = "../contracts/airdrop" }
 
-[dev-dependencies]
+# Pull in the contract's rlib so the fuzz target can call merkle::* directly
+# without going through the Soroban host mock.
+soroban-merkle-airdrop = { path = "../contracts/airdrop" }
 soroban-sdk = { version = "27.0.6", features = ["testutils"] }
 
 [[bin]]
-name = "leaf_hash"
-path = "fuzz_targets/leaf_hash.rs"
+name = "verify_proof"
+path = "fuzz_targets/verify_proof.rs"
 test = false
 doc = false
