@@ -435,6 +435,52 @@ impl AirdropContract {
         Ok(())
     }
 
+    /// Extend the airdrop expiration timestamp. Admin only.
+    ///
+    /// Allows the airdrop organiser to extend the distribution window without
+    /// redeploying. The new expiration must be strictly greater than the
+    /// current expiration to prevent accidentally closing the window early.
+    ///
+    /// # Arguments
+    ///
+    /// * `new_expiration` - New unix timestamp (seconds). Must be > current expiration.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AirdropError::NotInitialized` if the contract has not been initialised.
+    /// Returns `AirdropError::ExpirationInPast` if `new_expiration <= current expiration`.
+    ///
+    /// # Events
+    ///
+    /// Emits `("exp_ext", admin)` with data `new_expiration` on success.
+    pub fn extend_expiration(env: Env, new_expiration: u64) -> Result<(), AirdropError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(AirdropError::NotInitialized)?;
+        admin.require_auth();
+
+        let current: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Expiration)
+            .ok_or(AirdropError::NotInitialized)?;
+
+        if new_expiration <= current {
+            return Err(AirdropError::ExpirationInPast);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Expiration, &new_expiration);
+
+        env.events()
+            .publish((symbol_short!("exp_ext"), admin), new_expiration);
+
+        Ok(())
+    }
+
     /// Restore the contract instance from archival.
     ///
     /// Soroban's state-archival mechanism can archive instance storage once its
