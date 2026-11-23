@@ -10,6 +10,7 @@ import NavBar from "./components/NavBar";
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL ?? "";
 
 export const metadata: Metadata = {
+  metadataBase: baseUrl,
   title: "Merkle Airdrop — Stellar",
   description:
     "Claim your token allocation from this gas-efficient Merkle airdrop on Stellar. One compact proof — no batch transfers.",

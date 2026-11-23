@@ -23,10 +23,18 @@
  *   - Pure-CSS spinner shown during status === 'checking' or 'claiming'
  *   - Inputs disabled during loading states
  *   - Spinner has aria-label and role="status" for accessibility
+ *
+ * #84: SEP-7 URI scheme support
+ *   - After eligibility check passes, builds a stellar:tx?xdr=... URI from the
+ *     unsigned claim transaction XDR
+ *   - Displays the URI as a QR code (qrcode npm package, rendered to <canvas>)
+ *   - "Copy Link" button copies the URI to the clipboard
+ *   - On mobile the URI is a clickable link that opens a registered Stellar wallet
  */
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import QRCode from "qrcode";
 import { createAirdropClient, verifyProof, NETWORKS } from "@soroban-merkle-airdrop/sdk";
 import {
   getPublicKey,
@@ -135,6 +143,19 @@ export default function ClaimPage() {
   const [isFetching, setIsFetching] = useState(false);
   const [fetchError, setFetchError] = useState("");
 
+  // Debounce timer ref — prevents rapid re-fetches on double-click
+  const fetchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear any pending debounce timer when the component unmounts
+  useEffect(() => {
+    return () => {
+      if (fetchDebounceRef.current) {
+        clearTimeout(fetchDebounceRef.current);
+        fetchDebounceRef.current = null;
+      }
+    };
+  }, []);
+
   // Paste fallback
   const [proofJson, setProofJson] = useState("");
 
@@ -215,10 +236,7 @@ export default function ClaimPage() {
     try {
       const connected = await isConnected();
       if (!connected) {
-        setWalletError(
-          "Freighter wallet is not installed. " +
-            "Install it from https://freighter.app and refresh the page."
-        );
+        setWalletError("Freighter wallet is not installed.");
         return;
       }
       const publicKey = await getPublicKey();
@@ -229,10 +247,36 @@ export default function ClaimPage() {
     }
   }
 
+  // ─── Disconnect Wallet ──────────────────────────────────────────────────────
+
+  function handleDisconnectWallet() {
+    setWalletConnected(false);
+    setWalletAddress("");
+    setWalletError("");
+    // Reset claim state so the page returns to its initial, idle state.
+    setStatus("idle");
+    setMessage("");
+    setTreeData(null);
+    setFetchError("");
+    setIsFetching(false);
+  }
+
   // ─── Fetch tree from URL ────────────────────────────────────────────────────
 
   async function handleFetchTree() {
     if (!treeUrl.trim()) return;
+    // Debounce: reset the timer on every click so rapid double-clicks collapse
+    // into a single fetch after 300ms of inactivity.
+    if (fetchDebounceRef.current) {
+      clearTimeout(fetchDebounceRef.current);
+    }
+    fetchDebounceRef.current = setTimeout(() => {
+      fetchDebounceRef.current = null;
+      void runFetchTree();
+    }, 300);
+  }
+
+  async function runFetchTree() {
     setIsFetching(true);
     setFetchError("");
     setTreeData(null);
@@ -308,12 +352,70 @@ export default function ClaimPage() {
     }
   }
 
+  // ─── #84: Build SEP-7 URI ──────────────────────────────────────────────────
+
+  /**
+   * Builds a SEP-7 `stellar:tx?xdr=<base64url-encoded XDR>` URI from the
+   * unsigned claim transaction.  Called right after an eligibility check passes.
+   *
+   * SEP-7 spec: https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0007.md
+   */
+  async function buildSep7Uri(address: string, tree: Record<string, unknown>) {
+    if (!contractId) return;
+    setSep7Loading(true);
+    setSep7Error("");
+    setSep7Uri(null);
+
+    try {
+      const proofs = tree.proofs as Record<string, { amount: string; proof: string[] }>;
+      const entry = proofs[address];
+      if (!entry) return; // not in tree — skip silently
+
+      const proof = {
+        address,
+        amount: BigInt(entry.amount),
+        proof: entry.proof,
+      };
+
+      const client = createAirdropClient({ ...NETWORKS[network], contractId });
+      const unsignedXdr = await client.buildClaimTransaction(proof);
+
+      // SEP-7 uses standard base64 (not base64url) for the xdr parameter
+      // and the full URI scheme is `stellar:tx?xdr=<encoded>&...`
+      const encodedXdr = encodeURIComponent(unsignedXdr);
+      const uri = `stellar:tx?xdr=${encodedXdr}`;
+      setSep7Uri(uri);
+    } catch (err) {
+      // Non-fatal: SEP-7 is an enhancement; Freighter flow still works
+      setSep7Error((err as Error).message ?? String(err));
+    } finally {
+      setSep7Loading(false);
+    }
+  }
+
+  // ─── Copy SEP-7 link ────────────────────────────────────────────────────────
+
+  async function handleCopyLink() {
+    if (!sep7Uri) return;
+    try {
+      await navigator.clipboard.writeText(sep7Uri);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API unavailable (e.g. non-secure context)
+      setCopied(false);
+    }
+  }
+
   // ─── Eligibility check ──────────────────────────────────────────────────────
 
   async function handleCheck() {
     if (!walletAddress.trim()) return;
     setStatus("checking");
     setMessage("");
+    setSep7Uri(null);
+    setSep7Error("");
+
     try {
       if (!contractId) throw new Error("Airdrop contract not configured. Set NEXT_PUBLIC_AIRDROP_CONTRACT_ID.");
       const client = createAirdropClient({ ...NETWORKS[network], contractId });
@@ -330,6 +432,8 @@ export default function ClaimPage() {
         } else {
           setStatus("eligible");
           setMessage(`Eligible! Amount: ${entry.amount} tokens`);
+          // #84: Build SEP-7 URI now that eligibility is confirmed
+          await buildSep7Uri(walletAddress.trim(), treeData);
         }
       } else {
         setStatus("eligible");
@@ -372,6 +476,9 @@ export default function ClaimPage() {
       });
       const result = await client.submitSignedTransaction(signedXdr, proof);
       setTxHash(result.txHash);
+      // Build a SEP-7 tx URI so users can share or rebroadcast the signed tx
+      setSep7Uri(`web+stellar:tx?xdr=${encodeURIComponent(signedXdr)}`);
+      setCopyState("idle");
       setStatus("success");
       setMessage(`Successfully claimed ${result.amount.toString()} tokens!`);
 
@@ -428,7 +535,25 @@ export default function ClaimPage() {
       {/* ── Inject pure-CSS spinner keyframes ── */}
       <style>{spinnerStyles}</style>
 
-      <h1 style={{ fontSize: 28, fontWeight: 700, marginBottom: 8 }}>Check &amp; Claim</h1>
+      <h1
+        style={{
+          fontSize: 28,
+          fontWeight: 700,
+          marginBottom: 8,
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          flexWrap: "wrap",
+        }}
+      >
+        Check &amp; Claim{" "}
+        <span
+          className={`network-badge network-badge--${network}`}
+          data-testid="network-badge"
+        >
+          {network}
+        </span>
+      </h1>
       <p style={{ color: "#888", marginBottom: totalDeposited !== null ? 16 : 32 }}>
         Connect your Freighter wallet to check eligibility and claim your tokens.
       </p>
@@ -541,6 +666,57 @@ export default function ClaimPage() {
         </div>
       )}
 
+      {/* ── Progress bar (totalDeposited / totalClaimed) ── */}
+      {totalDeposited !== null && totalDeposited > 0n && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="progress-bar-section"
+          style={{
+            marginBottom: 20,
+            padding: "14px 18px",
+            borderRadius: 8,
+            background: "#111",
+            border: "1px solid #333",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#aaa", marginBottom: 6 }}>
+            <span>Airdrop Progress</span>
+            <span>
+              {totalClaimed !== null
+                ? `${totalClaimed.toString()} / ${totalDeposited.toString()} claimed`
+                : `${totalDeposited.toString()} total`}
+            </span>
+          </div>
+          <div
+            role="progressbar"
+            aria-label="Airdrop claim progress"
+            aria-valuenow={totalClaimed !== null ? Number(totalClaimed) : 0}
+            aria-valuemin={0}
+            aria-valuemax={Number(totalDeposited)}
+            style={{
+              height: 8,
+              borderRadius: 4,
+              background: "#333",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                height: "100%",
+                borderRadius: 4,
+                background: "#4caf50",
+                width:
+                  totalClaimed !== null && totalDeposited > 0n
+                    ? `${Math.min(100, Number((totalClaimed * 100n) / totalDeposited))}%`
+                    : "0%",
+                transition: "width 0.4s ease",
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* ── #78: Full-page loading overlay while expiration is being fetched ── */}
       {expirationLoading && (
         <div
@@ -588,7 +764,22 @@ export default function ClaimPage() {
                   fontSize: 13,
                 }}
               >
-                {walletError}
+                {walletError.includes("not installed") ? (
+                  <>
+                    Freighter is not installed.{" "}
+                    <a
+                      href="https://freighter.app"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: "#ff6b6b", textDecoration: "underline" }}
+                    >
+                      Install Freighter
+                    </a>{" "}
+                    and refresh the page.
+                  </>
+                ) : (
+                  walletError
+                )}
               </div>
             )}
           </div>
@@ -608,6 +799,23 @@ export default function ClaimPage() {
             }}
           >
             ✓ Wallet connected: {walletAddress}
+            <button
+              onClick={handleDisconnectWallet}
+              style={{
+                marginLeft: 12,
+                padding: "4px 10px",
+                background: "#ff6b6b",
+                color: "#fff",
+                fontWeight: 700,
+                fontSize: 12,
+                border: "none",
+                borderRadius: 6,
+                cursor: "pointer",
+              }}
+              aria-label="Disconnect wallet"
+            >
+              Disconnect
+            </button>
           </div>
         )}
 
@@ -770,7 +978,7 @@ export default function ClaimPage() {
         </button>
 
         {/* ── Status message ── */}
-        {status !== "idle" && message && (
+        {status !== "idle" && status !== "success" && message && (
           <div
             role="status"
             aria-live="polite"
@@ -785,6 +993,119 @@ export default function ClaimPage() {
             }}
           >
             {message}
+          </div>
+        )}
+
+        {/* ── #84: SEP-7 URI panel (shown when eligible) ── */}
+        {status === "eligible" && !isExpired && (
+          <div
+            aria-label="Sign with any Stellar wallet"
+            style={{
+              marginTop: 4,
+              padding: "18px 20px",
+              borderRadius: 10,
+              background: "#0d1117",
+              border: "1px solid #30363d",
+              display: "flex",
+              flexDirection: "column",
+              gap: 14,
+            }}
+          >
+            <p style={{ margin: 0, fontSize: 14, color: "#c9d1d9", fontWeight: 600 }}>
+              Sign with any Stellar wallet
+            </p>
+            <p style={{ margin: 0, fontSize: 12, color: "#8b949e", lineHeight: 1.5 }}>
+              Use the QR code or link below to sign the claim transaction with any{" "}
+              <a
+                href="https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0007.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: "#8ae4ff" }}
+              >
+                SEP-7–compatible wallet
+              </a>
+              . On mobile, tap the link to open your wallet app directly.
+            </p>
+
+            {sep7Loading && (
+              <div
+                role="status"
+                aria-live="polite"
+                style={{ display: "flex", alignItems: "center", gap: 8, color: "#888", fontSize: 13 }}
+              >
+                <span className="claim-spinner" aria-hidden="true" />
+                Building transaction…
+              </div>
+            )}
+
+            {sep7Error && (
+              <div
+                role="alert"
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 6,
+                  background: "#160000",
+                  border: "1px solid #ff6b6b",
+                  color: "#ff6b6b",
+                  fontSize: 12,
+                }}
+              >
+                Could not generate SEP-7 link: {sep7Error}
+              </div>
+            )}
+
+            {sep7Uri && (
+              <>
+                {/* QR code */}
+                <div style={{ display: "flex", justifyContent: "center" }}>
+                  <canvas
+                    ref={qrCanvasRef}
+                    aria-label="QR code for the SEP-7 claim transaction URI"
+                    style={{
+                      borderRadius: 8,
+                      border: "1px solid #30363d",
+                      display: "block",
+                    }}
+                  />
+                </div>
+
+                {/* Tap-to-open link (most useful on mobile) */}
+                <a
+                  href={sep7Uri}
+                  rel="noopener noreferrer"
+                  style={{
+                    display: "block",
+                    textAlign: "center",
+                    fontSize: 13,
+                    color: "#8ae4ff",
+                    wordBreak: "break-all",
+                    lineHeight: 1.4,
+                  }}
+                  aria-label="Open claim transaction in your Stellar wallet"
+                >
+                  Open in wallet →
+                </a>
+
+                {/* Copy link button */}
+                <button
+                  type="button"
+                  onClick={handleCopyLink}
+                  style={{
+                    padding: "8px 16px",
+                    borderRadius: 6,
+                    border: "1px solid #30363d",
+                    background: copied ? "#1a2e1a" : "#161b22",
+                    color: copied ? "#4caf50" : "#c9d1d9",
+                    fontSize: 13,
+                    cursor: "pointer",
+                    transition: "background 0.15s, color 0.15s",
+                  }}
+                  aria-label="Copy SEP-7 URI to clipboard"
+                >
+                  {copied ? "✓ Copied!" : "Copy Link"}
+                </button>
+              </>
+            )}
           </div>
         )}
 
@@ -807,7 +1128,7 @@ export default function ClaimPage() {
                 style={{ borderTopColor: "#4caf50" }}
               />
             )}
-            {status === "claiming" ? "Claiming..." : "Claim Tokens →"}
+            {status === "claiming" ? "Claiming..." : "Claim with Freighter →"}
           </button>
         )}
 

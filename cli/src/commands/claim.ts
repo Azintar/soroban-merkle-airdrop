@@ -20,6 +20,89 @@ import {
   validateMerkleTreeFile,
 } from "@soroban-merkle-airdrop/sdk";
 import { translateContractError } from "../errors.js";
+import { validateSecretKey } from "../validation.js";
+
+// ─── Exported types (for tests) ───────────────────────────────────────────────
+
+export interface ClaimOptions {
+  tree: string;
+  address: string;
+  secretKey: string;
+  network: string;
+  contractId: string;
+  verifyOnly?: boolean;
+}
+
+export interface ClaimResult {
+  txHash: string;
+  address: string;
+  amount: bigint;
+}
+
+export interface VerifyOnlyResult {
+  verified: true;
+  alreadyClaimed: boolean;
+  rootMismatch: boolean;
+  onChainRoot: string | null;
+  treeRoot: string;
+  address: string;
+  amount: bigint;
+}
+
+// ─── Core logic (exported for tests) ─────────────────────────────────────────
+
+export async function runClaim(opts: ClaimOptions): Promise<ClaimResult | VerifyOnlyResult> {
+  const raw = JSON.parse(await readFile(resolve(opts.tree), "utf-8"));
+  const entry = raw.proofs[opts.address];
+
+  if (!entry) {
+    throw new Error(`Address ${opts.address} not found in airdrop list`);
+  }
+
+  const proof = { ...entry, amount: BigInt(entry.amount) };
+
+  const valid = verifyProof(raw.root, proof.address, proof.amount, proof.proof);
+  if (!valid) {
+    throw new Error("Proof verification failed — tree may be corrupted");
+  }
+
+  const preset = NETWORKS[opts.network];
+  if (!preset) {
+    throw new Error(`Unknown network: ${opts.network}. Use testnet or mainnet.`);
+  }
+
+  const client = createAirdropClient({ ...preset, contractId: opts.contractId });
+
+  if (opts.verifyOnly) {
+    const [alreadyClaimed, onChainRoot] = await Promise.all([
+      client.isClaimed(opts.address),
+      client.merkleRoot(),
+    ]);
+
+    const rootMismatch =
+      onChainRoot !== null && onChainRoot !== raw.root;
+
+    return {
+      verified: true,
+      alreadyClaimed,
+      rootMismatch,
+      onChainRoot,
+      treeRoot: raw.root,
+      address: opts.address,
+      amount: proof.amount,
+    };
+  }
+
+  const already = await client.isClaimed(opts.address);
+  if (already) {
+    throw new Error(`${opts.address} has already claimed.`);
+  }
+
+  const result = await client.claim(proof, opts.secretKey);
+  return { txHash: result.txHash, address: result.address, amount: result.amount };
+}
+
+// ─── Commander command definition ─────────────────────────────────────────────
 
 export const claimCommand = new Command("claim")
   .description("Claim tokens from the airdrop")
@@ -27,6 +110,7 @@ export const claimCommand = new Command("claim")
   .requiredOption("-a, --address <address>", "Address to claim for")
   .option("-k, --secret-key <key>", "Stellar secret key (or set STELLAR_SECRET_KEY)")
   .option("--verify-only", "Verify proof locally and on-chain without submitting a transaction")
+  .option("--dry-run", "Simulate the claim transaction and show fee estimate without submitting")
   .action(async (opts, cmd) => {
     const globalOpts = cmd.parent?.opts() ?? {};
     const network = globalOpts.network ?? "testnet";
@@ -45,19 +129,18 @@ export const claimCommand = new Command("claim")
 
     const secretKey = opts.secretKey ?? process.env.STELLAR_SECRET_KEY;
     const verifyOnly: boolean = opts.verifyOnly ?? false;
+    const isDryRun: boolean = opts.dryRun ?? false;
 
     if (!contractId) {
       console.error(chalk.red("Error: --contract-id or AIRDROP_CONTRACT_ID required"));
       process.exit(1);
     }
 
-    if (!verifyOnly && !secretKey) {
-      console.error(chalk.red("Error: --secret-key or STELLAR_SECRET_KEY required (omit with --verify-only)"));
-      process.exit(1);
-    }
-
     const spinner = ora("Loading Merkle tree...").start();
     try {
+        const validatedSecretKey = verifyOnly
+          ? undefined
+          : validateSecretKey(secretKey, "claim");
       // Parse and validate the tree file schema.
       let raw: unknown;
       try {
@@ -79,8 +162,8 @@ export const claimCommand = new Command("claim")
 
       // ── Local proof verification ───────────────────────────────────────────
       spinner.text = "Verifying proof locally...";
-      const valid = verifyProof(raw.root, contractId, proof.address, proof.amount, proof.proof);
-      if (!valid) {
+      const locallyValid = verifyProof(tree.root, contractId, proof.address, proof.amount, proof.proof);
+      if (!locallyValid) {
         spinner.fail(chalk.red("Proof verification failed — tree may be corrupted"));
         process.exit(1);
       }
@@ -91,11 +174,16 @@ export const claimCommand = new Command("claim")
         // Override rpcUrl if --rpc-url was provided on the global options.
         ...(globalOpts.rpcUrl ? { rpcUrl: globalOpts.rpcUrl } : {}),
         contractId,
+        verifyOnly: opts.verifyOnly,
       });
 
       // ── Already claimed check ──────────────────────────────────────────────
       spinner.text = "Checking claim status...";
       const alreadyClaimed = await client.isClaimed(opts.address);
+
+      // ── On-chain root fetch (used by --verify-only) ────────────────────────
+      const onChainRoot = await client.merkleRoot();
+      const rootMatches = onChainRoot === tree.root;
 
       if (verifyOnly) {
         spinner.stop();
@@ -124,11 +212,6 @@ export const claimCommand = new Command("claim")
       }
 
       // ── Full claim flow ────────────────────────────────────────────────────
-      if (!locallyValid) {
-        spinner.fail(chalk.red("Proof verification failed — tree may be corrupted"));
-        process.exit(1);
-      }
-
       if (alreadyClaimed) {
         spinner.warn(chalk.yellow(`${opts.address} has already claimed.`));
         process.exit(0);
@@ -140,7 +223,7 @@ export const claimCommand = new Command("claim")
 
         // simulateClaim takes the public key, not the secret key
         const { Keypair } = await import("@stellar/stellar-sdk");
-        const publicKey = Keypair.fromSecret(secretKey).publicKey();
+        const publicKey = Keypair.fromSecret(validatedSecretKey!).publicKey();
 
         const sim = await client.simulateClaim(proof, publicKey);
 
@@ -169,7 +252,7 @@ export const claimCommand = new Command("claim")
 
       // ── Live mode: submit the transaction ─────────────────────────────────
       spinner.text = "Submitting claim transaction...";
-      const result = await client.claim(proof, secretKey);
+      const result = await client.claim(proof, validatedSecretKey!);
 
       spinner.succeed(chalk.green("Claim submitted!"));
       console.log(`\n  ${chalk.bold("Tx hash:")} ${chalk.cyan(result.txHash)}`);

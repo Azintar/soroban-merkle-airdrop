@@ -22,18 +22,21 @@
 //!
 //! # Storage layout
 //!
-//! - `DataKey::MerkleRoot`          → `BytesN<32>`  (instance)
-//! - `DataKey::TokenAddress`        → `Address`     (instance)
-//! - `DataKey::Admin`               → `Address`     (instance)
-//! - `DataKey::TotalDeposited`      → `i128`        (instance)
-//! - `DataKey::Active`              → `bool`        (instance)
-//! - `DataKey::Expiration`          → `u64`         (instance)
-//! - `DataKey::ClaimedCount`          → `u32`           (instance)
-//! - `DataKey::Claimed(addr)`       → `bool`        (persistent, per claimant)
+//! - `DataKey::MerkleRoot`          → `BytesN<32>`  (instance) — set by `initialize`, `update_merkle_root`
+//! - `DataKey::TokenAddress`        → `Address`     (instance) — set by `initialize`
+//! - `DataKey::Admin`               → `Address`     (instance) — set by `initialize`, `transfer_admin`
+//! - `DataKey::TotalDeposited`      → `i128`        (instance) — set by `initialize`, `update_merkle_root`
+//! - `DataKey::Active`              → `bool`        (instance) — set by `initialize`, `set_active`
+//! - `DataKey::Expiration`          → `u64`         (instance) — set by `initialize`
+//! - `DataKey::ClaimedCount`        → `u32`         (instance) — set by `claim`, `claim_for`, `batch_claim`
+//! - `DataKey::TotalClaimed`        → `i128`        (instance) — set by `claim`, `claim_for`, `batch_claim`
+//! - `DataKey::ClaimedTtl`          → `u32`         (instance) — set by `initialize`
+//! - `DataKey::InstanceTtl`         → `u32`         (instance) — set by `initialize`
+//! - `DataKey::Claimed(addr)`       → `bool`        (persistent, per claimant) — set by `claim`, `claim_for`, `batch_claim`
 
 #![no_std]
 
-mod merkle;
+pub mod merkle;
 mod types;
 
 #[cfg(test)]
@@ -57,7 +60,7 @@ contractmeta!(key = "Version", val = "0.1.0");
 /// 12_614_400 ledgers × 5 s/ledger = 63_072_000 s ≈ 2 years.
 /// Configurable via the `claimed_ttl` parameter in `initialize()`.
 const CLAIMED_TTL: u32 = 12_614_400;
-const CLAIMED_TTL_THRESHOLD: u32 = CLAIMED_TTL / 2;
+pub const CLAIMED_TTL_THRESHOLD: u32 = CLAIMED_TTL / 2;
 
 /// Default TTL for instance storage — ~2 years of ledgers (same magnitude as CLAIMED_TTL).
 ///
@@ -98,6 +101,7 @@ impl AirdropContract {
     ///                    Ledger ≈ 5 s; 12_614_400 × 5 s ≈ 2 years.
     /// * `instance_ttl` - Optional TTL (ledgers) for instance storage.
     ///                    Defaults to [`INSTANCE_TTL`] (~2 years) when `None`.
+    #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -126,12 +130,12 @@ impl AirdropContract {
 
         // Transfer tokens from admin into the contract.
         let token_client = TokenClient::new(&env, &token);
-        token_client
+        let _ = token_client
             .try_decimals()
             .map_err(|_| AirdropError::InvalidToken)?;
 
         // Transfer tokens from admin into the contract.
-        token_client.transfer(&admin, &env.current_contract_address(), &total_amount);
+        token_client.transfer(&admin, env.current_contract_address(), &total_amount);
 
         env.storage()
             .instance()
@@ -297,6 +301,11 @@ impl AirdropContract {
     /// is made (the organiser is responsible for ensuring the contract holds
     /// sufficient funds for all new claims).
     ///
+    /// **The contract does not need to be active; root rotation is permitted
+    /// while paused.** Admins may rotate roots at any time regardless of the
+    /// `Active` flag. This allows updating the distribution tree during a
+    /// maintenance pause without requiring the contract to be unpaused first.
+    ///
     /// # ⚠ Warning
     ///
     /// **Existing claimed flags are NOT reset.** Any address that already
@@ -342,11 +351,7 @@ impl AirdropContract {
                 .instance()
                 .get(&DataKey::TokenAddress)
                 .ok_or(AirdropError::NotInitialized)?;
-            TokenClient::new(&env, &token).transfer(
-                &admin,
-                &env.current_contract_address(),
-                &diff,
-            );
+            TokenClient::new(&env, &token).transfer(&admin, env.current_contract_address(), &diff);
         }
 
         env.storage()
@@ -356,10 +361,8 @@ impl AirdropContract {
             .instance()
             .set(&DataKey::TotalDeposited, &new_total);
 
-        env.events().publish(
-            (symbol_short!("root_upd"), admin),
-            (new_root, new_total),
-        );
+        env.events()
+            .publish((symbol_short!("root_upd"), admin), (new_root, new_total));
 
         Ok(())
     }
@@ -386,10 +389,8 @@ impl AirdropContract {
 
         env.storage().instance().set(&DataKey::Admin, &new_admin);
 
-        env.events().publish(
-            (symbol_short!("adm_xfer"), old_admin),
-            new_admin,
-        );
+        env.events()
+            .publish((symbol_short!("adm_xfer"), old_admin), new_admin);
 
         Ok(())
     }
@@ -448,9 +449,7 @@ impl AirdropContract {
             .instance()
             .get::<_, u32>(&DataKey::InstanceTtl)
             .unwrap_or(INSTANCE_TTL);
-        env.storage()
-            .instance()
-            .extend_ttl(i_ttl / 2, i_ttl);
+        env.storage().instance().extend_ttl(i_ttl / 2, i_ttl);
     }
 
     /// Reclaim unclaimed tokens after the airdrop expires. Admin only.
@@ -576,6 +575,31 @@ impl AirdropContract {
             .unwrap_or(0)
     }
 
+    pub fn claimed_ttl(env: Env) -> u32 {
+        extend_instance_ttl(&env);
+        get_claimed_ttl(&env)
+    }
+
+    pub fn instance_ttl(env: Env) -> u32 {
+        extend_instance_ttl(&env);
+        get_instance_ttl(&env)
+    }
+
+    pub fn remaining_balance(env: Env) -> i128 {
+        extend_instance_ttl(&env);
+        if !env.storage().instance().has(&DataKey::MerkleRoot) {
+            return 0;
+        }
+        let Some(token) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::TokenAddress)
+        else {
+            return 0;
+        };
+        TokenClient::new(&env, &token).balance(&env.current_contract_address())
+    }
+
     /// Return the sum of all tokens transferred via successful claims.
     ///
     /// Starts at 0 and grows by the claimed amount with each successful
@@ -668,6 +692,7 @@ impl AirdropContract {
 /// transfer — cannot drift apart. Returns `InvalidProof` for a proof that does
 /// not verify, and the caller decides whether that aborts one claim or a whole
 /// batch.
+#[allow(deprecated)]
 fn claim_entry(
     env: &Env,
     claimant: &Address,
@@ -723,11 +748,7 @@ fn claim_entry(
         .instance()
         .get(&DataKey::TokenAddress)
         .unwrap();
-    TokenClient::new(env, &token).transfer(
-        &env.current_contract_address(),
-        claimant,
-        &amount,
-    );
+    TokenClient::new(env, &token).transfer(&env.current_contract_address(), claimant, &amount);
 
     // Update TotalClaimed counter.
     let prev_claimed: i128 = env

@@ -83,18 +83,22 @@ pub fn leaf_hash(env: &Env, contract_id: &Address, claimant: &Address, amount: i
 ///
 /// let env = Env::default();
 ///
+/// let contract = Address::from_str(
+///     &env,
+///     "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
+/// );
 /// let alice = Address::from_str(
 ///     &env,
 ///     "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
 /// );
 /// let bob = Address::from_str(
 ///     &env,
-///     "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+///     "GBTL47RTFR5EKMZSXWOQU735WBK7LRPPDIDK3JTNTCZZ7NUBBRDTVSK2",
 /// );
 ///
 /// // Build a two-leaf tree: root = hash_pair(leaf_alice, leaf_bob).
-/// let leaf_alice = leaf_hash(&env, &alice, 1_000);
-/// let leaf_bob   = leaf_hash(&env, &bob, 500);
+/// let leaf_alice = leaf_hash(&env, &contract, &alice, 1_000);
+/// let leaf_bob   = leaf_hash(&env, &contract, &bob, 500);
 ///
 /// // Sort and hash the two leaves to get the root (mirrors the contract's hash_pair logic).
 /// let root: BytesN<32> = {

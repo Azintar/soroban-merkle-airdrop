@@ -1,5 +1,5 @@
 /**
- * Unit tests for the programmatic deploy command (Issue #69).
+ * Unit tests for the programmatic deploy command (Issues #69, #500).
  *
  * All Stellar RPC calls are mocked — no real network access occurs.
  */
@@ -42,6 +42,36 @@ const mockReadFile = vi.hoisted(() =>
 vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
   // eslint-disable-next-line @typescript-eslint/consistent-type-imports
   const actual = await importOriginal<typeof import("@stellar/stellar-sdk")>();
+
+  // Fake contract address bytes (32 bytes).
+  const fakeContractBytes = Buffer.alloc(32, 0xcc);
+
+  // fromXDR returns scvBytes on first call (WASM upload result) and
+  // scvAddress on second call (deploy contract result).
+  const fromXDR = vi.fn()
+    .mockReturnValueOnce({
+      v3: vi.fn().mockReturnValue({
+        sorobanMeta: vi.fn().mockReturnValue({
+          returnValue: vi.fn().mockReturnValue({
+            switch: vi.fn().mockReturnValue(scvBytesTag),
+            bytes: vi.fn().mockReturnValue(Buffer.alloc(32, 0xab)),
+          }),
+        }),
+      }),
+    })
+    .mockReturnValue({
+      v3: vi.fn().mockReturnValue({
+        sorobanMeta: vi.fn().mockReturnValue({
+          returnValue: vi.fn().mockReturnValue({
+            switch: vi.fn().mockReturnValue(scvAddressTag),
+            address: vi.fn().mockReturnValue({
+              switch: vi.fn().mockReturnValue(scAddressContractTag),
+              contractId: vi.fn().mockReturnValue(fakeContractBytes),
+            }),
+          }),
+        }),
+      }),
+    });
 
   return {
     ...actual,
@@ -159,6 +189,7 @@ const BASE_OPTS: DeployOptions = {
   expiration: "9999999999",
   secretKey: "STEST123SECRETKEY",
   network: "testnet",
+  pollIntervalMs: 0, // skip sleep() delays in tests
 };
 
 function simSuccess() {

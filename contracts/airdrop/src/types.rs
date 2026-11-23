@@ -1,4 +1,33 @@
 //! Data types and storage keys for the Merkle airdrop contract.
+//!
+//! # Storage layout
+//!
+//! All keys are accessed through the [`DataKey`] enum.  The table below maps
+//! every variant to its storage tier, value type, and the entry point that
+//! first writes it.
+//!
+//! | Variant | Storage tier | Value type | Set by |
+//! |---------|-------------|------------|--------|
+//! | [`DataKey::MerkleRoot`] | Instance | `BytesN<32>` | `initialize`, `update_merkle_root` |
+//! | [`DataKey::TokenAddress`] | Instance | `Address` | `initialize` |
+//! | [`DataKey::Admin`] | Instance | `Address` | `initialize`, `transfer_admin` |
+//! | [`DataKey::TotalDeposited`] | Instance | `i128` | `initialize`, `update_merkle_root` |
+//! | [`DataKey::Active`] | Instance | `bool` | `initialize`, `set_active` |
+//! | [`DataKey::Expiration`] | Instance | `u64` | `initialize` |
+//! | [`DataKey::ClaimedCount`] | Instance | `u32` | `claim`, `claim_for`, `batch_claim` |
+//! | [`DataKey::TotalClaimed`] | Instance | `i128` | `claim`, `claim_for`, `batch_claim` |
+//! | [`DataKey::ClaimedTtl`] | Instance | `u32` | `initialize` |
+//! | [`DataKey::InstanceTtl`] | Instance | `u32` | `initialize` |
+//! | [`DataKey::Claimed(addr)`] | Persistent | `bool` | `claim`, `claim_for`, `batch_claim` |
+//!
+//! **Instance** entries share a single TTL (default ~2 years / 12 614 400
+//! ledgers). Every read-query and the `restore()` helper re-extends this TTL
+//! so dormant airdrops are not archived.
+//!
+//! **Persistent** `Claimed(addr)` entries each have their own TTL (same
+//! default value, configurable via `claimed_ttl` in `initialize`). The TTL is
+//! extended at claim time and refreshed by `is_claimed()` to prevent archival
+//! from silently re-enabling a double-claim.
 
 use soroban_sdk::{contracterror, contracttype, Address};
 
@@ -21,6 +50,12 @@ pub enum DataKey {
     Expiration,
     /// Count of successful claims.
     ClaimedCount,
+    /// Sum of all tokens transferred by successful claims.
+    TotalClaimed,
+    /// Configured TTL (ledgers) for per-claimant `Claimed` entries.
+    ClaimedTtl,
+    /// Configured TTL (ledgers) for instance storage.
+    InstanceTtl,
 }
 
 /// Errors returned by the airdrop contract.
@@ -44,6 +79,9 @@ pub enum AirdropError {
     /// `initialize()` called with an expiration timestamp that is already in
     /// the past (i.e. `expiration <= env.ledger().timestamp()`).
     ExpirationInPast = 8,
+    /// The supplied token address does not implement the SEP-41 interface.
+    /// Returned by `initialize()` when `token.decimals()` cannot be called.
+    InvalidToken = 9,
 }
 
 /// A snapshot of all contract instance state, returned by `contract_info()`.

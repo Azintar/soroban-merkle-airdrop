@@ -20,9 +20,24 @@ import {
   Account,
 } from "@stellar/stellar-sdk";
 import type { Transaction } from "@stellar/stellar-sdk";
-import type { ClaimProof, ClaimResult, BatchClaimResult, NetworkConfig } from "./types.js";
+import type { ClaimProof, ClaimResult, NetworkConfig, SimulateClaimResult } from "./types.js";
 import { AirdropContractError, RpcError } from "./types.js";
 import { verifyProof } from "./merkle.js";
+
+/**
+ * The public API surface returned by {@link createAirdropClient}.
+ *
+ * Consumers can use this type to annotate variables or parameters that hold a
+ * client instance:
+ *
+ * @example
+ * ```ts
+ * import type { AirdropClient } from '@soroban-merkle-airdrop/sdk';
+ *
+ * function displayStatus(client: AirdropClient) { ... }
+ * ```
+ */
+export type AirdropClient = ReturnType<typeof createAirdropClient>;
 
 /**
  * Create a typed client for an on-chain soroban-merkle-airdrop contract.
@@ -49,6 +64,8 @@ import { verifyProof } from "./merkle.js";
  * ```
  */
 export function createAirdropClient(config: NetworkConfig) {
+  const maxRetries = config.maxRetries ?? 3;
+  const defaultBackoffMs = config._backoffMs ?? 1000;
   const server = new rpc.Server(config.rpcUrl, { allowHttp: false });
   const contractInst = new Contract(config.contractId);
   const pollTimeoutMs = config.pollTimeoutMs ?? 60_000;
@@ -151,6 +168,46 @@ export function createAirdropClient(config: NetworkConfig) {
    * const total = await client.totalDeposited();
    * const pct = Number(claimed * 100n / total);
    * console.log(`${pct}% of tokens claimed`);
+   * ```
+   */
+  async function totalClaimed(): Promise<bigint> {
+    const result = await simulateRead(contractInst.call("total_claimed"));
+    return BigInt(scValToNative(result) as number);
+  }
+
+  /**
+   * Fetch the total tokens claimed so far from the airdrop contract.
+   *
+   * @returns Total claimed amount in base units, or `null` if the contract
+   *   has not been initialised or does not expose this value.
+   *
+   * @example
+   * ```ts
+   * const claimed = await client.totalClaimed();
+   * console.log("Total claimed:", claimed?.toString());
+   * ```
+   */
+  async function totalClaimed(): Promise<bigint | null> {
+    try {
+      const result = await simulateRead(contractInst.call("total_claimed"));
+      const native = scValToNative(result);
+      if (native === null || native === undefined) return null;
+      return BigInt(native as number);
+    } catch {
+      // Contract may not expose total_claimed; treat as best-effort.
+      return null;
+    }
+  }
+
+  /**
+   * Fetch the total tokens claimed so far from the airdrop contract.
+   *
+   * @returns Total claimed amount in base units.
+   *
+   * @example
+   * ```ts
+   * const claimed = await client.totalClaimed();
+   * console.log("Claimed so far:", claimed.toString());
    * ```
    */
   async function totalClaimed(): Promise<bigint> {
@@ -407,79 +464,59 @@ export function createAirdropClient(config: NetworkConfig) {
   }
 
   /**
-   * Submit a batch claim transaction on behalf of multiple recipients in one
-   * transaction.
+   * Claim tokens on behalf of a recipient without requiring the recipient's
+   * signature (operator-pays model).
    *
-   * Encodes every entry and its parallel proof vector as Soroban XDR, signs
-   * the transaction with `signerSecretKey` (the operator key — not the
-   * claimants), and submits it. The contract's `batch_claim` entry point
-   * requires each claimant to authorise the call; in test environments all
-   * auths are mocked, but in production each claimant must have pre-authorised
-   * via a sub-invocation auth entry.
+   * Calls the contract's `claim_for` entry point. The operator signs and pays
+   * the transaction fees; tokens are always sent to `claimProof.address`, not
+   * to the operator. The Merkle proof binds the `(claimant, amount)` pair to
+   * the on-chain root, so an operator cannot redirect tokens to themselves.
    *
-   * The batch is all-or-nothing on-chain: if any single entry has an invalid
-   * proof, is already claimed, or the airdrop is paused, the whole transaction
-   * is rolled back and an {@link AirdropContractError} is thrown.
-   *
-   * @param entries          - Parallel array of `ClaimProof` objects — one per recipient.
-   * @param signerSecretKey  - Operator's Stellar secret key (S...) that signs
-   *                           and pays for the transaction.
-   * @returns A {@link BatchClaimResult} with the on-chain transaction hash and
-   *   the number of entries included.
-   * @throws {@link AirdropContractError} if the contract rejects any entry.
+   * @param claimProof          - The proof package for the claimant, from `buildMerkleTree`.
+   * @param operatorSecretKey   - The operator's Stellar secret key (S...). The operator
+   *                              pays network fees; the claimant does **not** sign.
+   * @returns A {@link ClaimResult} with the on-chain transaction hash and claimed amount.
+   * @throws {@link AirdropContractError} if the contract rejects the claim.
    * @throws {@link RpcError} for network-level failures or polling timeouts.
    *
    * @example
    * ```ts
-   * const result = await client.batchClaim(
-   *   [proofA, proofB, proofC],
-   *   operatorSecretKey
-   * );
-   * console.log(`Batch of ${result.count} claims in tx ${result.txHash}`);
+   * // Operator pays fees; tokens land in claimProof.address
+   * const result = await client.claimFor(proof, operatorSecretKey);
+   * console.log("Claimed in tx:", result.txHash);
+   * console.log("Token recipient:", result.address); // claimant, not operator
    * ```
    */
-  async function batchClaim(
-    entries: ClaimProof[],
-    signerSecretKey: string
-  ): Promise<BatchClaimResult> {
-    const keypair = Keypair.fromSecret(signerSecretKey);
-    const sourceAccount = await server.getAccount(keypair.publicKey());
+  async function claimFor(
+    claimProof: ClaimProof,
+    operatorSecretKey: string
+  ): Promise<ClaimResult> {
+    const operatorKeypair = Keypair.fromSecret(operatorSecretKey);
+    const sourceAccount = await server.getAccount(operatorKeypair.publicKey());
 
-    // Build the Vec<AirdropEntry> ScVal.
-    // Each entry is a map with fields "claimant" (Address) and "amount" (i128).
-    const entriesScVal = xdr.ScVal.scvVec(
-      entries.map((e) =>
-        xdr.ScVal.scvMap([
-          new xdr.ScMapEntry({
-            key: xdr.ScVal.scvSymbol("claimant"),
-            val: new Address(e.address).toScVal(),
-          }),
-          new xdr.ScMapEntry({
-            key: xdr.ScVal.scvSymbol("amount"),
-            val: nativeToScVal(e.amount, { type: "i128" }),
-          }),
-        ])
-      )
-    );
-
-    // Build the Vec<Vec<BytesN<32>>> ScVal — one proof vector per entry.
-    const proofsScVal = xdr.ScVal.scvVec(
-      entries.map((e) =>
-        xdr.ScVal.scvVec(
-          e.proof.map((h) => xdr.ScVal.scvBytes(Buffer.from(h, "hex")))
-        )
-      )
+    const proofScVal = xdr.ScVal.scvVec(
+      claimProof.proof.map((h) => {
+        const bytes = Buffer.from(h, "hex");
+        return xdr.ScVal.scvBytes(bytes);
+      })
     );
 
     const tx = new TransactionBuilder(sourceAccount, {
       fee: BASE_FEE,
       networkPassphrase: config.networkPassphrase,
     })
-      .addOperation(contractInst.call("batch_claim", entriesScVal, proofsScVal))
+      .addOperation(
+        contractInst.call(
+          "claim_for",
+          new Address(claimProof.address).toScVal(),
+          nativeToScVal(claimProof.amount, { type: "i128" }),
+          proofScVal
+        )
+      )
       .setTimeout(30)
       .build();
 
-    const simResult = await server.simulateTransaction(tx);
+    const simResult = await withRetry(() => server.simulateTransaction(tx));
     if (rpc.Api.isSimulationError(simResult)) {
       const contractCode = parseContractErrorCode(simResult.error);
       if (contractCode !== null) {
@@ -489,9 +526,9 @@ export function createAirdropClient(config: NetworkConfig) {
     }
 
     const preparedTx = rpc.assembleTransaction(tx, simResult).build();
-    preparedTx.sign(keypair);
+    preparedTx.sign(operatorKeypair);
 
-    const sendResult = await server.sendTransaction(preparedTx);
+    const sendResult = await withRetry(() => server.sendTransaction(preparedTx));
     if (sendResult.status === "ERROR") {
       throw new RpcError(
         `Transaction submission failed`,
@@ -500,11 +537,11 @@ export function createAirdropClient(config: NetworkConfig) {
     }
 
     const txHash = sendResult.hash;
-    const batchDeadline = Date.now() + pollTimeoutMs;
+    const deadline = Date.now() + pollTimeoutMs;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       await sleep(2000);
-      if (Date.now() >= batchDeadline) {
+      if (Date.now() >= deadline) {
         throw new RpcError(
           `Transaction confirmation timeout after ${pollTimeoutMs}ms: ${txHash}`
         );
@@ -514,7 +551,8 @@ export function createAirdropClient(config: NetworkConfig) {
         return {
           success: true,
           txHash,
-          count: entries.length,
+          address: claimProof.address,
+          amount: claimProof.amount,
         };
       }
       if (poll.status === "FAILED") {
@@ -571,7 +609,7 @@ export function createAirdropClient(config: NetworkConfig) {
       .setTimeout(30)
       .build();
 
-    const simResult = await server.simulateTransaction(tx);
+    const simResult = await withRetry(() => server.simulateTransaction(tx));
     if (rpc.Api.isSimulationError(simResult)) {
       const contractCode = parseContractErrorCode(simResult.error);
       if (contractCode !== null) {
@@ -609,7 +647,7 @@ export function createAirdropClient(config: NetworkConfig) {
     claimProof: ClaimProof
   ): Promise<ClaimResult> {
     const txEnvelope = TransactionBuilder.fromXDR(signedXdr, config.networkPassphrase) as Transaction;
-    const sendResult = await server.sendTransaction(txEnvelope);
+    const sendResult = await withRetry(() => server.sendTransaction(txEnvelope));
     if (sendResult.status === "ERROR") {
       throw new RpcError(
         `Transaction submission failed`,
@@ -683,8 +721,10 @@ export function createAirdropClient(config: NetworkConfig) {
       .setTimeout(30)
       .build();
 
-    const simResult = await server.simulateTransaction(tx);
+    const simResult = await withRetry(() => server.simulateTransaction(tx));
     if (rpc.Api.isSimulationError(simResult)) {
+      const contractCode = parseContractErrorCode(simResult.error);
+      if (contractCode !== null) throw new AirdropContractError(contractCode);
       throw new RpcError(`Read simulation failed: ${simResult.error}`);
     }
     return (simResult as rpc.Api.SimulateTransactionSuccessResponse).result!.retval;
@@ -731,8 +771,9 @@ export function createAirdropClient(config: NetworkConfig) {
     expiration,
     remainingBalance,
     tokenDecimals,
+    claimedCount,
     claim,
-    batchClaim,
+    claimFor,
     buildClaimTransaction,
     submitSignedTransaction,
     verifyClaimProof,

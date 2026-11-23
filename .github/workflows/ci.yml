@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   contract:
     name: Contract (Rust)
@@ -71,9 +75,54 @@ jobs:
             echo "> ⚠️ **Warning:** WASM exceeds 64 KB limit (${SIZE_KB} KB). This increases deployment cost." >> $GITHUB_STEP_SUMMARY
           fi
 
+  fuzz:
+    name: Fuzz (nightly, short budget)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Nightly is required by libFuzzer's sanitizer-coverage instrumentation
+      # and is used ONLY for this job — every other job stays on stable.
+      - name: Install nightly Rust toolchain
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --locked
+
+      # The accumulated corpus makes each run start from every input that
+      # previously exercised the target, so 30 seconds buy real coverage
+      # growth instead of re-discovering the same inputs.
+      - name: Cache fuzz corpus
+        uses: actions/cache@v6
+        with:
+          path: |
+            fuzz/corpus/verify_proof
+            ~/.cargo/bin/cargo-fuzz
+          key: ${{ runner.os }}-fuzz-corpus-${{ hashFiles('fuzz/**') }}
+          restore-keys: |
+            ${{ runner.os }}-fuzz-corpus-
+
+      - name: Run verify_proof fuzz target (30s budget)
+        # A crash, timeout, or OOM in verify_proof fails the CI build:
+        # continue-on-error is deliberately false (the default).
+        timeout-minutes: 15
+        working-directory: fuzz
+        run: cargo +nightly fuzz run verify_proof -- -max_total_time=30 -max_len=1024
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-artifacts-verify_proof
+          path: fuzz/artifacts/verify_proof/
+          if-no-files-found: ignore
+
   sdk:
     name: SDK + CLI (TypeScript)
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["20", "24"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
@@ -107,7 +156,7 @@ jobs:
         run: pnpm lint
         working-directory: sdk
       - name: Test SDK
-        run: pnpm test
+        run: pnpm test:coverage
         working-directory: sdk
       - name: Audit CLI dependencies
         # Fail the build on high or critical vulnerabilities in cli/.
@@ -127,6 +176,12 @@ jobs:
         working-directory: cli
       - name: Test CLI
         run: pnpm test
+        working-directory: cli
+      - name: Test CLI
+        run: pnpm test
+        working-directory: cli
+      - name: Typecheck CLI
+        run: pnpm typecheck
         working-directory: cli
 
   web:
@@ -167,7 +222,15 @@ jobs:
       - name: Lint
         run: pnpm lint
         working-directory: web
-        continue-on-error: true
+      - name: Test web
+        run: pnpm test
+        working-directory: web
+      - name: Upload web coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-coverage
+          path: web/coverage/
+          if-no-files-found: warn
       - name: Build
         run: pnpm build
         working-directory: web

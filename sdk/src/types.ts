@@ -168,24 +168,25 @@ export interface MerkleTreeFile {
   >;
 }
 
-// ─── Batch claim result ───────────────────────────────────────────────────────
+// ─── Simulate claim result ───────────────────────────────────────────────────
 
 /**
- * Returned by {@link createAirdropClient.batchClaim} on success.
+ * Returned by {@link createAirdropClient.simulateClaim}.
  *
- * @example
- * ```ts
- * const result: BatchClaimResult = await client.batchClaim(proofs, operatorSecretKey);
- * console.log(`Batch of ${result.count} claims submitted in tx ${result.txHash}`);
- * ```
+ * Contains the estimated fee (in stroops) and optional Soroban resource
+ * consumption details for a claim transaction, without actually submitting it.
  */
-export interface BatchClaimResult {
-  /** Always `true` for a successful batch claim. */
-  success: boolean;
-  /** On-chain transaction hash. */
-  txHash: string;
-  /** Number of entries included in the batch. */
-  count: number;
+export interface SimulateClaimResult {
+  /** Estimated total fee in stroops (base fee + Soroban resource fee). */
+  fee: string;
+  /** Soroban resource consumption from the simulation. May be empty if unavailable. */
+  resources: {
+    instructions?: number;
+    readBytes?: number;
+    writeBytes?: number;
+    readEntries?: number;
+    writeEntries?: number;
+  };
 }
 
 // ─── Claim result ────────────────────────────────────────────────────────────
@@ -271,16 +272,24 @@ export function formatAmount(raw: bigint, decimals: number): string {
  * ```
  */
 export enum AirdropError {
+  /** Contract has already been initialised — `initialize()` may only be called once. */
+  AlreadyInitialized = 1,
   /** The address has already submitted a successful claim. */
-  AlreadyClaimed = 1,
+  AlreadyClaimed = 2,
   /** The supplied Merkle proof does not verify against the on-chain root. */
-  InvalidProof = 2,
-  /** The airdrop contract is not currently active. */
-  AirdropInactive = 3,
-  /** The contract does not hold enough tokens to pay the claim. */
-  InsufficientFunds = 4,
-  /** The caller is not authorised to perform this action. */
-  Unauthorized = 5,
+  InvalidProof = 3,
+  /** The airdrop contract is not currently active (paused by admin). */
+  NotActive = 4,
+  /** Contract has not been initialised yet — `initialize()` has not been called. */
+  NotInitialized = 5,
+  /** Zero or negative amount supplied to `initialize()` or `claim()`. */
+  ZeroAmount = 6,
+  /** `reclaim()` called before the expiration timestamp has been reached. */
+  NotYetExpired = 7,
+  /** `initialize()` called with an expiration timestamp already in the past. */
+  ExpirationInPast = 8,
+  /** The supplied token address does not implement the SEP-41 interface. */
+  InvalidToken = 9,
 }
 
 /**
@@ -324,12 +333,16 @@ export class AirdropContractError extends Error {
 
   private static defaultMessage(code: number): string {
     switch (code) {
-      case AirdropError.AlreadyClaimed:    return "Address has already claimed";
-      case AirdropError.InvalidProof:      return "Invalid Merkle proof";
-      case AirdropError.AirdropInactive:   return "Airdrop is not active";
-      case AirdropError.InsufficientFunds: return "Insufficient contract funds";
-      case AirdropError.Unauthorized:      return "Unauthorized";
-      default:                             return `Contract error (code ${code})`;
+      case AirdropError.AlreadyInitialized: return "Contract has already been initialised";
+      case AirdropError.AlreadyClaimed:     return "Address has already claimed";
+      case AirdropError.InvalidProof:       return "Invalid Merkle proof";
+      case AirdropError.NotActive:          return "Airdrop is not active";
+      case AirdropError.NotInitialized:     return "Contract has not been initialised";
+      case AirdropError.ZeroAmount:         return "Amount must be greater than zero";
+      case AirdropError.NotYetExpired:      return "Airdrop has not expired yet";
+      case AirdropError.ExpirationInPast:   return "Expiration timestamp is in the past";
+      case AirdropError.InvalidToken:       return "Token does not implement SEP-41";
+      default:                              return `Contract error (code ${code})`;
     }
   }
 }
