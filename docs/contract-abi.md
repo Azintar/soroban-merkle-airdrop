@@ -1,210 +1,314 @@
-# Contract ABI — soroban-merkle-airdrop
+# soroban-merkle-airdrop — Contract ABI
 
-This document describes every public function exposed by the `AirdropContract`.
-All functions are invoked via Soroban's standard contract-call mechanism.
+> **Version:** 0.1.0  
+> **Source:** [`contracts/airdrop/src/lib.rs`](../contracts/airdrop/src/lib.rs)  
+> **Machine-readable spec:** [`docs/contract-spec.json`](./contract-spec.json)
 
----
-
-## `initialize`
-
-```
-initialize(
-  admin:        Address,
-  token:        Address,
-  merkle_root:  BytesN<32>,
-  total_amount: i128,
-  expiration:   u64,
-) -> Result<(), AirdropError>
-```
-
-Initialises the airdrop. Must be called exactly once before any claims.
-The `admin` transfers `total_amount` tokens from the SEP-41 `token` contract
-into this contract and sets up all instance-storage keys.
-
-**Arguments**
-
-| Name           | Type          | Description                                                       |
-|----------------|---------------|-------------------------------------------------------------------|
-| `admin`        | `Address`     | Address that controls the airdrop (can pause/reclaim).            |
-| `token`        | `Address`     | SEP-41 token contract address to distribute.                      |
-| `merkle_root`  | `BytesN<32>`  | 32-byte Merkle root of the `(address, amount)` distribution tree. |
-| `total_amount` | `i128`        | Total tokens to distribute; transferred from `admin` on call.     |
-| `expiration`   | `u64`         | Unix timestamp (seconds) after which `reclaim()` is permitted.    |
-
-**Errors**: `AlreadyInitialized`, `ZeroAmount`
-
-**Events**: publishes `(("init", admin), (merkle_root, total_amount))`
+This document describes all public functions, their parameter types, return types,
+events, error codes, and storage layout for the `soroban-merkle-airdrop` Soroban
+smart contract.
 
 ---
 
-## `claim`
+## Table of Contents
 
-```
-claim(
-  claimant: Address,
-  amount:   i128,
-  proof:    Vec<BytesN<32>>,
-) -> Result<(), AirdropError>
-```
-
-Claims tokens on behalf of `claimant`. Verifies the Merkle proof, marks the
-address as claimed (persistent storage), and transfers `amount` tokens to the
-claimant. The claimant must sign the transaction.
-
-**Arguments**
-
-| Name       | Type               | Description                                             |
-|------------|--------------------|---------------------------------------------------------|
-| `claimant` | `Address`          | Address claiming tokens (must authorise the call).      |
-| `amount`   | `i128`             | Token amount allocated to this claimant in the tree.    |
-| `proof`    | `Vec<BytesN<32>>`  | Ordered sibling hashes from the leaf up to the root.    |
-
-**Errors**: `NotInitialized`, `NotActive`, `ZeroAmount`, `AlreadyClaimed`, `InvalidProof`
-
-**Events**: publishes `(("claimed", claimant), amount)`
+- [Functions](#functions)
+  - [initialize](#initialize)
+  - [claim](#claim)
+  - [set\_active](#set_active)
+  - [reclaim](#reclaim)
+  - [merkle\_root](#merkle_root)
+  - [is\_claimed](#is_claimed)
+  - [is\_active](#is_active)
+  - [token](#token)
+  - [admin](#admin)
+  - [total\_deposited](#total_deposited)
+  - [expiration](#expiration)
+- [Events](#events)
+- [Error Codes](#error-codes)
+- [Storage Layout](#storage-layout)
+- [Hashing Algorithms](#hashing-algorithms)
+- [Keeping This Document Up To Date](#keeping-this-document-up-to-date)
 
 ---
 
-## `set_active`
+## Functions
 
+### `initialize`
+
+Initialise the airdrop. Must be called **once** before any claims. The caller
+deposits `total_amount` tokens from the SEP-41 token contract into this contract.
+
+**Authorization:** `admin` must sign (via `require_auth`).
+
+| Parameter      | Type          | Description                                                                 |
+| -------------- | ------------- | --------------------------------------------------------------------------- |
+| `admin`        | `Address`     | Controls the airdrop; may pause or reclaim unclaimed tokens.                |
+| `token`        | `Address`     | SEP-41 token contract address to distribute.                                |
+| `merkle_root`  | `BytesN<32>`  | 32-byte Merkle root of the `(address, amount)` distribution tree.           |
+| `total_amount` | `i128`        | Total tokens to distribute; transferred from `admin` into the contract.     |
+| `expiration`   | `u64`         | Unix timestamp (seconds) after which `reclaim()` is permitted.              |
+
+**Returns:** `Result<(), AirdropError>`
+
+**Emits:**
 ```
-set_active(active: bool) -> Result<(), AirdropError>
+topic: (Symbol("init"), Address(admin))
+data:  (BytesN<32>(merkle_root), i128(total_amount))
 ```
 
-Pauses (`false`) or unpauses (`true`) the airdrop. Admin only.
-When `active` is `false`, all `claim()` calls return `NotActive`.
-
-**Arguments**
-
-| Name     | Type   | Description                      |
-|----------|--------|----------------------------------|
-| `active` | `bool` | `true` = live, `false` = paused. |
-
-**Errors**: `NotInitialized`
-
-**Events**: publishes `(("paused", admin), active)`
+**Errors:** `AlreadyInitialized` (1), `ZeroAmount` (6), `ExpirationInPast` (8), `InvalidToken` (9)
 
 ---
 
-## `restore`
+### `claim`
 
+Claim tokens from the airdrop. The claimant supplies their allocated `amount`
+and a Merkle `proof` demonstrating inclusion in the distribution tree. Tokens
+are transferred immediately on success.
+
+**Authorization:** `claimant` must sign (via `require_auth`).
+
+| Parameter | Type               | Description                                                   |
+| --------- | ------------------ | ------------------------------------------------------------- |
+| `claimant` | `Address`         | Address claiming tokens; must sign the transaction.           |
+| `amount`   | `i128`            | Token amount allocated to this claimant.                      |
+| `proof`    | `Vec<BytesN<32>>` | Ordered list of sibling hashes from leaf to root.             |
+
+**Returns:** `Result<(), AirdropError>`
+
+**Emits:**
 ```
-restore()
+topic: (Symbol("claimed"), Address(claimant))
+data:  i128(amount)
 ```
 
-Extends instance-storage TTL back to the maximum. Anyone may call this —
-no authentication is required. Useful when the contract has been archived by
-Soroban's state-archival mechanism and must be restored before it can be used.
+**Errors:** `NotActive` (4), `NotInitialized` (5), `ZeroAmount` (6), `AlreadyClaimed` (2), `InvalidProof` (3)
 
 ---
 
-## `reclaim`
+### `set_active`
 
-```
-reclaim() -> Result<i128, AirdropError>
-```
+Pause or unpause the airdrop. Only the admin can call this.
 
-Transfers all remaining token balance held by the contract back to the admin.
-Can only be called after `expiration`. Admin only.
+**Authorization:** stored `admin` must sign.
 
-**Returns**: the amount of tokens transferred to the admin.
+| Parameter | Type   | Description                                |
+| --------- | ------ | ------------------------------------------ |
+| `active`  | `bool` | `true` to activate, `false` to pause.     |
 
-**Errors**: `NotInitialized`, `NotYetExpired`
+**Returns:** `Result<(), AirdropError>`
 
-**Events**: publishes `(("reclaimed", admin), balance)`
-
-> **Post-reclaim: the Active flag is NOT reset.**
-> A subsequent `claim()` will panic at the token layer (insufficient balance)
-> rather than return `NotActive`. Call `set_active(false)` after `reclaim()`
-> if you want to prevent further claim attempts.
+**Errors:** `NotInitialized` (5)
 
 ---
 
-## `merkle_root`
+### `reclaim`
 
+Reclaim unclaimed tokens after the airdrop expires. Admin only.  
+Can only be called once `env.ledger().timestamp() >= expiration`.
+Transfers the contract's remaining token balance back to the admin.
+
+**Authorization:** stored `admin` must sign.
+
+| Parameter | Type | Description |
+| --------- | ---- | ----------- |
+| _(none)_  | —    | —           |
+
+**Returns:** `Result<i128, AirdropError>` — the amount reclaimed.
+
+**Emits:**
 ```
-merkle_root() -> Option<BytesN<32>>
+topic: (Symbol("reclaimed"), Address(admin))
+data:  i128(balance)
 ```
 
-Returns the Merkle root stored at initialisation, or `None` if the contract
-has not been initialised. Also refreshes instance-storage TTL.
+**Errors:** `NotInitialized` (5), `NotYetExpired` (7)
 
 ---
 
-## `is_claimed`
+### `merkle_root`
 
-```
-is_claimed(claimant: Address) -> bool
-```
+Return the Merkle root stored in this contract.
 
-Returns `true` if `claimant` has already successfully called `claim()`.
-Also refreshes instance-storage TTL.
+| Parameter | Type | Description |
+| --------- | ---- | ----------- |
+| _(none)_  | —    | —           |
 
----
-
-## `is_active`
-
-```
-is_active() -> bool
-```
-
-Returns the current value of the `Active` flag. Returns `false` if the
-contract has not been initialised. Also refreshes instance-storage TTL.
+**Returns:** `Option<BytesN<32>>` — the 32-byte root, or `None` if not initialised.
 
 ---
 
-## `token`
+### `is_claimed`
 
-```
-token() -> Option<Address>
-```
+Return `true` if the given claimant has already claimed.
 
-Returns the SEP-41 token contract address, or `None` before initialisation.
-Also refreshes instance-storage TTL.
+| Parameter  | Type      | Description          |
+| ---------- | --------- | -------------------- |
+| `claimant` | `Address` | Address to check.    |
 
----
-
-## `admin`
-
-```
-admin() -> Option<Address>
-```
-
-Returns the admin address, or `None` before initialisation.
-Also refreshes instance-storage TTL.
+**Returns:** `bool`
 
 ---
 
-## `total_deposited`
+### `is_active`
 
-```
-total_deposited() -> i128
-```
+Return whether the airdrop is currently active.
 
-Returns the total token amount deposited at initialisation. Returns `0` before
-initialisation. Also refreshes instance-storage TTL.
+| Parameter | Type | Description |
+| --------- | ---- | ----------- |
+| _(none)_  | —    | —           |
 
----
-
-## `expiration`
-
-```
-expiration() -> Option<u64>
-```
-
-Returns the expiration timestamp (unix seconds) after which `reclaim()` is
-permitted, or `None` before initialisation. Also refreshes instance-storage TTL.
+**Returns:** `bool` — `true` if active, `false` if paused or uninitialised.
 
 ---
 
-## Error codes
+### `token`
 
-| Variant              | Meaning                                                            |
-|----------------------|--------------------------------------------------------------------|
-| `AlreadyInitialized` | `initialize()` was called on an already-initialised contract.      |
-| `NotInitialized`     | A function was called before `initialize()`.                       |
-| `NotActive`          | `claim()` was called while the `Active` flag is `false`.           |
-| `ZeroAmount`         | `total_amount` or `amount` is ≤ 0.                                 |
-| `AlreadyClaimed`     | The claimant has already claimed their allocation.                 |
-| `InvalidProof`       | The supplied Merkle proof does not match the stored root.          |
-| `NotYetExpired`      | `reclaim()` was called before the expiration timestamp.            |
+Return the SEP-41 token contract address being distributed.
+
+| Parameter | Type | Description |
+| --------- | ---- | ----------- |
+| _(none)_  | —    | —           |
+
+**Returns:** `Option<Address>`
+
+---
+
+### `admin`
+
+Return the admin address.
+
+| Parameter | Type | Description |
+| --------- | ---- | ----------- |
+| _(none)_  | —    | —           |
+
+**Returns:** `Option<Address>`
+
+---
+
+### `total_deposited`
+
+Return total tokens deposited at initialisation.
+
+| Parameter | Type | Description |
+| --------- | ---- | ----------- |
+| _(none)_  | —    | —           |
+
+**Returns:** `i128` — `0` if not yet initialised.
+
+---
+
+### `expiration`
+
+Return the expiration timestamp (unix seconds) after which `reclaim` is allowed.
+
+| Parameter | Type | Description |
+| --------- | ---- | ----------- |
+| _(none)_  | —    | —           |
+
+**Returns:** `Option<u64>`
+
+---
+
+## Events
+
+All events emitted by the contract follow the Soroban event format:
+`(topics_tuple, data_val)`. Topics are encoded as a Soroban `Vec<Val>`.
+
+| Function      | Topic                                        | Data                                    |
+| ------------- | -------------------------------------------- | --------------------------------------- |
+| `initialize`  | `(Symbol("init"), Address(admin))`           | `(BytesN<32>(merkle_root), i128(total_amount))` |
+| `claim`       | `(Symbol("claimed"), Address(claimant))`     | `i128(amount)`                          |
+| `reclaim`     | `(Symbol("reclaimed"), Address(admin))`      | `i128(balance)`                         |
+
+---
+
+## Error Codes
+
+Errors are represented as `u32` values in the contract spec XDR.
+
+| Code | Name                | Description                                                                       |
+| ---- | ------------------- | --------------------------------------------------------------------------------- |
+| `1`  | `AlreadyInitialized` | `initialize()` may only be called once.                                          |
+| `2`  | `AlreadyClaimed`    | Each address may only claim once.                                                 |
+| `3`  | `InvalidProof`      | The Merkle proof does not verify against the stored root.                         |
+| `4`  | `NotActive`         | The airdrop has been paused by the admin.                                         |
+| `5`  | `NotInitialized`    | `initialize()` has not been called yet.                                           |
+| `6`  | `ZeroAmount`        | Zero or negative amount supplied to `initialize()` or `claim()`.                  |
+| `7`  | `NotYetExpired`     | `reclaim()` called before the expiration timestamp has been reached.              |
+| `8`  | `ExpirationInPast`  | `initialize()` called with `expiration <= env.ledger().timestamp()`.              |
+| `9`  | `InvalidToken`      | The supplied token address does not implement the SEP-41 interface (`decimals()` call failed). |
+
+---
+
+## Storage Layout
+
+### Instance storage (shared contract state)
+
+| Key              | Type         | Description                                         |
+| ---------------- | ------------ | --------------------------------------------------- |
+| `MerkleRoot`     | `BytesN<32>` | 32-byte Merkle root of the distribution tree.       |
+| `TokenAddress`   | `Address`    | SEP-41 token contract being distributed.            |
+| `Admin`          | `Address`    | Admin address.                                      |
+| `TotalDeposited` | `i128`       | Total tokens deposited at initialisation.           |
+| `Active`         | `bool`       | Whether the airdrop is currently active.            |
+| `Expiration`     | `u64`        | Unix timestamp after which `reclaim()` is allowed.  |
+
+Instance storage TTL: **~2 years** (12,614,400 ledgers).
+
+### Persistent storage (per-claimant)
+
+| Key               | Type   | Description                                              |
+| ----------------- | ------ | -------------------------------------------------------- |
+| `Claimed(Address)` | `bool` | Whether a given address has claimed. One entry per claimant. |
+
+Persistent entry TTL: **~2 years** (12,614,400 ledgers), refreshed on each claim.
+
+---
+
+## Hashing Algorithms
+
+### Leaf hash
+
+```
+leaf = SHA-256(
+  SHA-256(utf8_bytes(strkey_address))   -- 32 bytes
+  ++
+  big_endian_16_bytes(amount)           -- 16 bytes
+)
+```
+
+1. Encode the Stellar address as its strkey UTF-8 string bytes  
+   (e.g. `GABC...` for G-accounts, `CABC...` for contract addresses).
+2. SHA-256 hash those bytes to produce a stable 32-byte address digest.
+3. Encode the token amount as a 16-byte big-endian integer.
+4. Concatenate `(address_digest ++ amount_bytes)` and SHA-256 hash to produce
+   the 32-byte leaf.
+
+The double-hash is necessary because Soroban's `Address` type does not expose
+raw public-key bytes in contract code; hashing the strkey string is the stable
+canonical substitute used by both the Rust contract and the TypeScript SDK.
+
+### Node hash
+
+```
+node = SHA-256(min(left, right) ++ max(left, right))
+```
+
+Children are **sorted by byte value** before hashing, making the tree
+position-independent. The same distribution produces the same root regardless
+of the input list order, and proofs work from any leaf position.
+
+---
+
+## Keeping This Document Up To Date
+
+This file must be updated whenever the contract interface changes:
+
+1. Add, remove, or rename any public function in `contracts/airdrop/src/lib.rs`.
+2. Add, remove, or rename an error variant in `contracts/airdrop/src/types.rs`.
+3. Change a function's parameter types, return type, or event structure.
+
+Update both this file (`docs/contract-abi.md`) and the machine-readable spec
+(`docs/contract-spec.json`) in the same commit as the contract change.
