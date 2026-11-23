@@ -32,7 +32,7 @@
 
 #![no_std]
 
-mod merkle;
+pub mod merkle;
 mod types;
 
 #[cfg(test)]
