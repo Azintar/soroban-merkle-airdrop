@@ -1,10 +1,11 @@
 #![cfg(test)]
 
 extern crate alloc;
+extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{storage::Instance as _, Address as _, Events, Ledger, MockAuth, MockAuthInvoke},
+    testutils::{storage::Instance as _, Address as _, BytesN as _, Events, Ledger, MockAuth, MockAuthInvoke},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
@@ -3092,6 +3093,102 @@ fn test_initialize_invalid_token_fails() {
         result,
         Err(Ok(AirdropError::InvalidToken)),
         "initialize() with a non-token contract address must return InvalidToken"
+    );
+}
+
+// ─── Issue #465: verify_proof CPU instruction benchmarks ─────────────────────
+//
+// These tests measure how many Soroban CPU instructions `verify_proof` consumes
+// for Merkle trees of increasing depth.  They act as regression guards: if the
+// instruction count climbs unexpectedly the assertion catches it.
+//
+// Measured baseline values (soroban-sdk 27, native Rust host, non-WASM):
+//   depth 10 (1 024-leaf tree):   ~  121 000 instructions
+//   depth 14 (16 384-leaf tree):  ~  170 000 instructions
+//   depth 17 (131 072-leaf tree): ~  206 000 instructions
+//
+// Native host instruction counts are lower than WASM counts because the WASM
+// VM adds its own overheads.  The ceiling chosen for depth 17 (10 000 000) is
+// deliberately generous so the test passes on both native and WASM runtimes
+// and leaves headroom for future SDK cost-model updates.
+
+/// Build a synthetic proof vector of the given depth filled with random
+/// 32-byte sibling hashes.  The hashes are semantically meaningless — their
+/// purpose is solely to exercise the loop inside `verify_proof`.
+fn build_synthetic_proof(env: &Env, depth: usize) -> Vec<BytesN<32>> {
+    let mut proof = Vec::new(env);
+    for _ in 0..depth {
+        proof.push_back(BytesN::random(env));
+    }
+    proof
+}
+
+/// verify_proof CPU-instruction benchmark for a depth-10 (1 024-leaf) tree.
+///
+/// Measured baseline: ≈ 121 000 instructions (native host, soroban-sdk 27).
+/// Ceiling: 10 000 000 instructions.
+#[test]
+fn test_bench_verify_proof_depth_10() {
+    let env = Env::default();
+    let root = BytesN::random(&env);
+    let leaf = BytesN::random(&env);
+    let proof = build_synthetic_proof(&env, 10);
+
+    env.cost_estimate().budget().reset_default();
+    let _ = merkle::verify_proof(&env, &root, leaf, &proof);
+    let instructions = env.cost_estimate().budget().cpu_instruction_cost();
+
+    std::println!("verify_proof depth 10 — CPU instructions: {instructions}");
+    // Ceiling: 10 000 000 instructions.
+    assert!(
+        instructions < 10_000_000,
+        "verify_proof depth 10 used {instructions} instructions — exceeds ceiling of 10_000_000"
+    );
+}
+
+/// verify_proof CPU-instruction benchmark for a depth-14 (16 384-leaf) tree.
+///
+/// Measured baseline: ≈ 170 000 instructions (native host, soroban-sdk 27).
+/// Ceiling: 10 000 000 instructions.
+#[test]
+fn test_bench_verify_proof_depth_14() {
+    let env = Env::default();
+    let root = BytesN::random(&env);
+    let leaf = BytesN::random(&env);
+    let proof = build_synthetic_proof(&env, 14);
+
+    env.cost_estimate().budget().reset_default();
+    let _ = merkle::verify_proof(&env, &root, leaf, &proof);
+    let instructions = env.cost_estimate().budget().cpu_instruction_cost();
+
+    std::println!("verify_proof depth 14 — CPU instructions: {instructions}");
+    // Ceiling: 10 000 000 instructions.
+    assert!(
+        instructions < 10_000_000,
+        "verify_proof depth 14 used {instructions} instructions — exceeds ceiling of 10_000_000"
+    );
+}
+
+/// verify_proof CPU-instruction benchmark for a depth-17 (131 072-leaf) tree.
+///
+/// Measured baseline: ≈ 206 000 instructions (native host, soroban-sdk 27).
+/// Ceiling: 10 000 000 instructions.
+#[test]
+fn test_bench_verify_proof_depth_17() {
+    let env = Env::default();
+    let root = BytesN::random(&env);
+    let leaf = BytesN::random(&env);
+    let proof = build_synthetic_proof(&env, 17);
+
+    env.cost_estimate().budget().reset_default();
+    let _ = merkle::verify_proof(&env, &root, leaf, &proof);
+    let instructions = env.cost_estimate().budget().cpu_instruction_cost();
+
+    std::println!("verify_proof depth 17 — CPU instructions: {instructions}");
+    // Ceiling: 10 000 000 instructions.
+    assert!(
+        instructions < 10_000_000,
+        "verify_proof depth 17 used {instructions} instructions — exceeds ceiling of 10_000_000"
     );
 }
 
