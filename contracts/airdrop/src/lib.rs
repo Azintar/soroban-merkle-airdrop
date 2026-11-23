@@ -301,6 +301,11 @@ impl AirdropContract {
     /// is made (the organiser is responsible for ensuring the contract holds
     /// sufficient funds for all new claims).
     ///
+    /// **The contract does not need to be active; root rotation is permitted
+    /// while paused.** Admins may rotate roots at any time regardless of the
+    /// `Active` flag. This allows updating the distribution tree during a
+    /// maintenance pause without requiring the contract to be unpaused first.
+    ///
     /// # ⚠ Warning
     ///
     /// **Existing claimed flags are NOT reset.** Any address that already
