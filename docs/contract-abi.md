@@ -86,6 +86,30 @@ When `active` is `false`, all `claim()` calls return `NotActive`.
 
 ---
 
+## `extend_expiration`
+
+```
+extend_expiration(new_expiration: u64) -> Result<(), AirdropError>
+```
+
+Extends the airdrop expiration timestamp. Admin only.
+
+Allows the airdrop organiser to widen the distribution window without
+redeploying. The new expiration must be **strictly greater** than the current
+value — this prevents accidentally closing the window early.
+
+**Arguments**
+
+| Name              | Type  | Description                                                                 |
+|-------------------|-------|-----------------------------------------------------------------------------|
+| `new_expiration`  | `u64` | New unix timestamp (seconds). Must be strictly greater than current value.  |
+
+**Errors**: `NotInitialized`, `ExpirationInPast`
+
+**Events**: publishes `(("exp_ext", admin), new_expiration)`
+
+---
+
 ## `restore`
 
 ```
@@ -208,3 +232,4 @@ permitted, or `None` before initialisation. Also refreshes instance-storage TTL.
 | `AlreadyClaimed`     | The claimant has already claimed their allocation.                 |
 | `InvalidProof`       | The supplied Merkle proof does not match the stored root.          |
 | `NotYetExpired`      | `reclaim()` was called before the expiration timestamp.            |
+| `ExpirationInPast`   | `extend_expiration()` was called with a value ≤ current expiration. |

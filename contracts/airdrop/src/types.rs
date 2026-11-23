@@ -49,4 +49,6 @@ pub enum AirdropError {
     ZeroAmount = 6,
     /// `reclaim()` called before the expiration timestamp has been reached.
     NotYetExpired = 7,
+    /// `extend_expiration()` called with a value not strictly greater than the current expiration.
+    ExpirationInPast = 8,
 }
