@@ -1,0 +1,114 @@
+[
+  {
+    "_comment": "Vector 0 — G-address, typical amount 1 000 000; original cross-language vector from test.rs",
+    "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "address": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    "amount": "1000000",
+    "expected_leaf_hex": "fb989b5580a56a726684e1c4242fa42ccaac2519109c8287737de93668c6d0bd"
+  },
+  {
+    "_comment": "Vector 1 — G-address, minimum positive amount = 1",
+    "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "address": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+    "amount": "1",
+    "expected_leaf_hex": "fec2363330a54b68fe4fa5ed56d790069551618e3c939ac5937131f6b88db7db"
+  },
+  {
+    "_comment": "Vector 2 — G-address, i128::MAX = 2^127 - 1; both high and low 64-bit words fully set",
+    "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "address": "GAYOLLLUIZE4DZMBB2ZBKGBUBZLIOYU6XFLW37GBP2VZD3ABNXCW4BVA",
+    "amount": "170141183460469231731687303715884105727",
+    "expected_leaf_hex": "d4e672c1b1c36451a5624ce18b20429dc3afda82a259b88c4f116b9ee7e5b762"
+  },
+  {
+    "_comment": "Vector 3 — G-address, amount = 2^64; high 64-bit word = 1, low = 0; tests carry across word boundary",
+    "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "address": "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGPFWEPDFWPTTG6CQRPMSZ",
+    "amount": "18446744073709551616",
+    "expected_leaf_hex": "69f1841d77d1392ece3d9c67a66776a40a861db66ecd47c58bf1d76e2f456811"
+  },
+  {
+    "_comment": "Vector 4 — G-address, small amount 500",
+    "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "address": "GC2XDH63N3GGWP7QH36PFPTSEMC77HNHHCFK4MT5P7UY2LVJRLXIYWW",
+    "amount": "500",
+    "expected_leaf_hex": "10ad7e6ab53c61e2cfdc19d702b2da67e38844abf2df1517f7c62494b3fb0cda"
+  },
+  {
+    "_comment": "Vector 5 — G-address, billion-scale amount 1 000 000 000",
+    "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "address": "GBVZJYDVQ4WY7GQFKNGJQZ3HVFMR3PNJYMLFKPQWIGZPHNVBNKMKFXM",
+    "amount": "1000000000",
+    "expected_leaf_hex": "23ed1847658d3d04a7adbf0ca3f2b27cb43ec394ca37b5ed53492eca858c5dfa"
+  },
+  {
+    "_comment": "Vector 6 — G-address, amount = 250",
+    "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "address": "GDXF5SHEF3XNZE3EF3VIJTNS3FMTMHQSXMLLWFUJL7YFJPMIHYF5KAW",
+    "amount": "250",
+    "expected_leaf_hex": "eb7be9689b4f130ca489d9e91d6a40373dbe36779d6a466138ba3bc5b4d1b0a3"
+  },
+  {
+    "_comment": "Vector 7 — C-address claimant (Soroban contract), amount = 42; exercises contract address strkey hashing",
+    "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+    "amount": "42",
+    "expected_leaf_hex": "edd3f976362e6c3983b0494fb3f35853874a13aa0c245abc492af41773760846"
+  },
+  {
+    "_comment": "Vector 8 — C-address claimant using CONTRACT_B as recipient, large amount near 10^10",
+    "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "address": "CBEZIXBSAPZ5YBH2WQHLISNOQDXVZKZQRPX3MF5GRCJJMH3SBYXEWYJ",
+    "amount": "9999999999",
+    "expected_leaf_hex": "1eab3e481027dd6c3503ada75b8f54d2dfb4b02db11c66752eb597d82bb85582"
+  },
+  {
+    "_comment": "Vector 9 — G-address, amount = 5 × 2^64 (high 64-bit word = 5, low = 0); exercises high-word encoding path",
+    "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "address": "GDMGJ4JCWZL6FJDAKBLH3UQ7GBWJMPBWLGVP4G5UYXZ3AVZDLJ5L3AO",
+    "amount": "92233720368547758080",
+    "expected_leaf_hex": "19815310933fa14354e976dbe212ab2404d781f315025d4446318d68312c0334"
+  },
+  {
+    "_comment": "Vector 10 — G-address, amount near i128::MAX/2 (high word ≈ 2^62); mid-range high-word encoding",
+    "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "address": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    "amount": "85070591730234615865843651857942052864",
+    "expected_leaf_hex": "402d827758562454e3c6b88283e8b3d1c0aba2a713c7dbd83a8c55da0a8e1932"
+  },
+  {
+    "_comment": "Vector 11 — same address and amount as vector 0 but contract_id = CONTRACT_B; proves domain separation produces a different hash",
+    "contract_id": "CBEZIXBSAPZ5YBH2WQHLISNOQDXVZKZQRPX3MF5GRCJJMH3SBYXEWYJ",
+    "address": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    "amount": "1000000",
+    "expected_leaf_hex": "4c78b3badcfbeae09f7bb00af72fb2388883752728d4fee358fd663584ec5dbe"
+  },
+  {
+    "_comment": "Vector 12 — G-address with CONTRACT_B, amount = 1; confirms different contract produces a different hash for minimum amount",
+    "contract_id": "CBEZIXBSAPZ5YBH2WQHLISNOQDXVZKZQRPX3MF5GRCJJMH3SBYXEWYJ",
+    "address": "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+    "amount": "1",
+    "expected_leaf_hex": "c1789b874a35bd60dad5f15db17283b5dc49446909a9555d9737bd81db33b2bf"
+  },
+  {
+    "_comment": "Vector 13 — C-address claimant with CONTRACT_B, amount = 42; C-recipient under a second contract",
+    "contract_id": "CBEZIXBSAPZ5YBH2WQHLISNOQDXVZKZQRPX3MF5GRCJJMH3SBYXEWYJ",
+    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+    "amount": "42",
+    "expected_leaf_hex": "99102adc3063fd0db464c38d3147b90ed0566723ffd712b7615082c3b14908b8"
+  },
+  {
+    "_comment": "Vector 14 — G-address, amount = 2^63 (sign-bit boundary of the low 64-bit word)",
+    "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "address": "GC2XDH63N3GGWP7QH36PFPTSEMC77HNHHCFK4MT5P7UY2LVJRLXIYWW",
+    "amount": "9223372036854775808",
+    "expected_leaf_hex": "7f6569cd702dc9553b79c0923cf3c3a11c5d5944f9156955709b7190bad90bea"
+  },
+  {
+    "_comment": "Vector 15 — G-address, amount = 2 (low-word-only, non-trivial even amount)",
+    "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+    "address": "GBVZJYDVQ4WY7GQFKNGJQZ3HVFMR3PNJYMLFKPQWIGZPHNVBNKMKFXM",
+    "amount": "2",
+    "expected_leaf_hex": "775c957b4c9f62f6dd91c81a63bfa580922a5f692c87d8deb686a7e8b5963576"
+  }
+]
