@@ -248,6 +248,19 @@ impl AirdropContract {
     ///
     /// Can only be called once `env.ledger().timestamp() >= expiration`.
     /// Transfers the contract's remaining token balance back to the admin.
+    ///
+    /// # Post-reclaim behavior
+    ///
+    /// **The `Active` flag is NOT changed to `false` after `reclaim()` returns.**
+    /// The contract remains in the `Active = true` state even after all tokens
+    /// have been transferred out.
+    ///
+    /// A subsequent `claim()` call will therefore **not** return a `NotActive`
+    /// error. Instead, it will reach the token-transfer step and panic at the
+    /// token layer because the contract balance is zero (insufficient balance).
+    ///
+    /// If you want to prevent new claim attempts after reclaiming, explicitly
+    /// call `set_active(false)` — either before or immediately after `reclaim()`.
     pub fn reclaim(env: Env) -> Result<i128, AirdropError> {
         let admin: Address = env
             .storage()
