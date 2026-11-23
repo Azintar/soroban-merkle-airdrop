@@ -20,7 +20,7 @@ import {
   Account,
 } from "@stellar/stellar-sdk";
 import type { Transaction } from "@stellar/stellar-sdk";
-import type { ClaimProof, ClaimResult, NetworkConfig } from "./types.js";
+import type { ClaimProof, ClaimResult, BatchClaimResult, NetworkConfig } from "./types.js";
 import { AirdropContractError, RpcError } from "./types.js";
 import { verifyProof } from "./merkle.js";
 
@@ -407,6 +407,123 @@ export function createAirdropClient(config: NetworkConfig) {
   }
 
   /**
+   * Submit a batch claim transaction on behalf of multiple recipients in one
+   * transaction.
+   *
+   * Encodes every entry and its parallel proof vector as Soroban XDR, signs
+   * the transaction with `signerSecretKey` (the operator key — not the
+   * claimants), and submits it. The contract's `batch_claim` entry point
+   * requires each claimant to authorise the call; in test environments all
+   * auths are mocked, but in production each claimant must have pre-authorised
+   * via a sub-invocation auth entry.
+   *
+   * The batch is all-or-nothing on-chain: if any single entry has an invalid
+   * proof, is already claimed, or the airdrop is paused, the whole transaction
+   * is rolled back and an {@link AirdropContractError} is thrown.
+   *
+   * @param entries          - Parallel array of `ClaimProof` objects — one per recipient.
+   * @param signerSecretKey  - Operator's Stellar secret key (S...) that signs
+   *                           and pays for the transaction.
+   * @returns A {@link BatchClaimResult} with the on-chain transaction hash and
+   *   the number of entries included.
+   * @throws {@link AirdropContractError} if the contract rejects any entry.
+   * @throws {@link RpcError} for network-level failures or polling timeouts.
+   *
+   * @example
+   * ```ts
+   * const result = await client.batchClaim(
+   *   [proofA, proofB, proofC],
+   *   operatorSecretKey
+   * );
+   * console.log(`Batch of ${result.count} claims in tx ${result.txHash}`);
+   * ```
+   */
+  async function batchClaim(
+    entries: ClaimProof[],
+    signerSecretKey: string
+  ): Promise<BatchClaimResult> {
+    const keypair = Keypair.fromSecret(signerSecretKey);
+    const sourceAccount = await server.getAccount(keypair.publicKey());
+
+    // Build the Vec<AirdropEntry> ScVal.
+    // Each entry is a map with fields "claimant" (Address) and "amount" (i128).
+    const entriesScVal = xdr.ScVal.scvVec(
+      entries.map((e) =>
+        xdr.ScVal.scvMap([
+          new xdr.ScMapEntry({
+            key: xdr.ScVal.scvSymbol("claimant"),
+            val: new Address(e.address).toScVal(),
+          }),
+          new xdr.ScMapEntry({
+            key: xdr.ScVal.scvSymbol("amount"),
+            val: nativeToScVal(e.amount, { type: "i128" }),
+          }),
+        ])
+      )
+    );
+
+    // Build the Vec<Vec<BytesN<32>>> ScVal — one proof vector per entry.
+    const proofsScVal = xdr.ScVal.scvVec(
+      entries.map((e) =>
+        xdr.ScVal.scvVec(
+          e.proof.map((h) => xdr.ScVal.scvBytes(Buffer.from(h, "hex")))
+        )
+      )
+    );
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: config.networkPassphrase,
+    })
+      .addOperation(contractInst.call("batch_claim", entriesScVal, proofsScVal))
+      .setTimeout(30)
+      .build();
+
+    const simResult = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(simResult)) {
+      const contractCode = parseContractErrorCode(simResult.error);
+      if (contractCode !== null) {
+        throw new AirdropContractError(contractCode);
+      }
+      throw new RpcError(`Simulation failed: ${simResult.error}`);
+    }
+
+    const preparedTx = rpc.assembleTransaction(tx, simResult).build();
+    preparedTx.sign(keypair);
+
+    const sendResult = await server.sendTransaction(preparedTx);
+    if (sendResult.status === "ERROR") {
+      throw new RpcError(
+        `Transaction submission failed`,
+        sendResult.errorResult?.toXDR("base64")
+      );
+    }
+
+    const txHash = sendResult.hash;
+    const batchDeadline = Date.now() + pollTimeoutMs;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      await sleep(2000);
+      if (Date.now() >= batchDeadline) {
+        throw new RpcError(
+          `Transaction confirmation timeout after ${pollTimeoutMs}ms: ${txHash}`
+        );
+      }
+      const poll = await server.getTransaction(txHash);
+      if (poll.status === "SUCCESS") {
+        return {
+          success: true,
+          txHash,
+          count: entries.length,
+        };
+      }
+      if (poll.status === "FAILED") {
+        throw new RpcError(`Transaction failed on-chain: ${txHash}`);
+      }
+    }
+  }
+
+  /**
    * Build an unsigned claim transaction XDR string for external signing
    * (e.g. via a browser wallet like Freighter).
    *
@@ -615,6 +732,7 @@ export function createAirdropClient(config: NetworkConfig) {
     remainingBalance,
     tokenDecimals,
     claim,
+    batchClaim,
     buildClaimTransaction,
     submitSignedTransaction,
     verifyClaimProof,

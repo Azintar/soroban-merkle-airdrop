@@ -168,6 +168,26 @@ export interface MerkleTreeFile {
   >;
 }
 
+// ─── Batch claim result ───────────────────────────────────────────────────────
+
+/**
+ * Returned by {@link createAirdropClient.batchClaim} on success.
+ *
+ * @example
+ * ```ts
+ * const result: BatchClaimResult = await client.batchClaim(proofs, operatorSecretKey);
+ * console.log(`Batch of ${result.count} claims submitted in tx ${result.txHash}`);
+ * ```
+ */
+export interface BatchClaimResult {
+  /** Always `true` for a successful batch claim. */
+  success: boolean;
+  /** On-chain transaction hash. */
+  txHash: string;
+  /** Number of entries included in the batch. */
+  count: number;
+}
+
 // ─── Claim result ────────────────────────────────────────────────────────────
 
 /**

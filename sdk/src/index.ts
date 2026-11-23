@@ -32,6 +32,7 @@ export type {
   MerkleTreeFile,
   NetworkConfig,
   ClaimResult,
+  BatchClaimResult,
   InitEvent,
   ClaimedEvent,
   ReclaimedEvent,

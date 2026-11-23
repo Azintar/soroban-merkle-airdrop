@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createAirdropClient } from "./client.js";
-import { RpcError } from "./types.js";
+import { RpcError, AirdropContractError, AirdropError } from "./types.js";
 
 // ─── Minimal mocks for @stellar/stellar-sdk ────────────────────────────────
 
@@ -22,12 +22,12 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
   const mockGetAccount = vi.fn();
   const mockSimulateTransaction = vi.fn();
 
-  const MockServer = vi.fn().mockImplementation(() => ({
-    sendTransaction: mockSendTransaction,
-    getTransaction: mockGetTransaction,
-    getAccount: mockGetAccount,
-    simulateTransaction: mockSimulateTransaction,
-  }));
+  const MockServer = vi.fn().mockImplementation(function(this: Record<string, unknown>) {
+    this.sendTransaction = mockSendTransaction;
+    this.getTransaction = mockGetTransaction;
+    this.getAccount = mockGetAccount;
+    this.simulateTransaction = mockSimulateTransaction;
+  });
 
   return {
     ...actual,
@@ -37,15 +37,15 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
       assembleTransaction: vi.fn().mockReturnValue({ build: vi.fn().mockReturnValue({ toXDR: vi.fn(), sign: vi.fn() }) }),
       Api: actual.rpc?.Api ?? {},
     },
-    Contract: vi.fn().mockImplementation(() => ({
-      call: vi.fn().mockReturnValue({}),
-    })),
-    TransactionBuilder: vi.fn().mockImplementation(() => ({
-      addOperation: vi.fn().mockReturnThis(),
-      setTimeout: vi.fn().mockReturnThis(),
-      build: vi.fn().mockReturnValue({ sign: vi.fn(), toXDR: vi.fn() }),
-    })),
-    Account: vi.fn().mockImplementation(() => ({})),
+    Contract: vi.fn().mockImplementation(function(this: Record<string, unknown>) {
+      this.call = vi.fn().mockReturnValue({});
+    }),
+    TransactionBuilder: vi.fn().mockImplementation(function(this: Record<string, unknown>) {
+      this.addOperation = vi.fn().mockReturnThis();
+      this.setTimeout = vi.fn().mockReturnThis();
+      this.build = vi.fn().mockReturnValue({ sign: vi.fn(), toXDR: vi.fn() });
+    }),
+    Account: vi.fn().mockImplementation(function() { /* empty constructor */ }),
     Keypair: {
       ...actual.Keypair,
       fromSecret: vi.fn().mockReturnValue({
@@ -56,6 +56,9 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
         publicKey: vi.fn().mockReturnValue("GRND123"),
       }),
     },
+    Address: vi.fn().mockImplementation(function(this: Record<string, unknown>, _addr: string) {
+      this.toScVal = vi.fn().mockReturnValue({});
+    }),
   };
 });
 
@@ -297,6 +300,101 @@ describe("createAirdropClient — tokenDecimals() (Issue #58)", () => {
     const result = await client.tokenDecimals();
     expect(result).toBeNull();
   });
+});
+
+// ─── Issue #496: batchClaim() method ───────────────────────────────────────
+
+describe("createAirdropClient — batchClaim() (Issue #496)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const BATCH_ENTRIES = [
+    { address: "GABC123", amount: 1000n, proof: ["aabbcc"] },
+    { address: "GDEF456", amount: 500n,  proof: ["ddeeff"] },
+  ];
+
+  it("resolves with success:true and correct count when transaction confirms", async () => {
+    const client = createAirdropClient({ ...BASE_CONFIG, pollTimeoutMs: 5000 });
+    const server = await getMockServer();
+
+    server.getAccount.mockResolvedValue({ id: "GOPER123", sequenceNumber: () => "0" });
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: {} },
+      transactionData: {},
+      minResourceFee: "100",
+    });
+    server.sendTransaction.mockResolvedValue({ status: "PENDING", hash: "batchhash123" });
+    server.getTransaction
+      .mockResolvedValueOnce({ status: "NOT_FOUND" })
+      .mockResolvedValueOnce({ status: "SUCCESS" });
+
+    const result = await client.batchClaim(BATCH_ENTRIES, "SOPER123");
+
+    expect(result.success).toBe(true);
+    expect(result.txHash).toBe("batchhash123");
+    expect(result.count).toBe(2);
+  }, 15_000);
+
+  it("throws AirdropContractError when simulation returns a contract error", async () => {
+    const client = createAirdropClient(BASE_CONFIG);
+    const server = await getMockServer();
+
+    server.getAccount.mockResolvedValue({ id: "GOPER123", sequenceNumber: () => "0" });
+    // Soroban formats errors as Error(Contract, #N). Code 2 = InvalidProof.
+    server.simulateTransaction.mockResolvedValue({
+      error: "Error(Contract, #2)",
+    });
+
+    await expect(
+      client.batchClaim(BATCH_ENTRIES, "SOPER123")
+    ).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(AirdropContractError);
+      expect((err as InstanceType<typeof AirdropContractError>).code).toBe(AirdropError.InvalidProof);
+      return true;
+    });
+  });
+
+  it("throws RpcError with timeout message when polling times out", async () => {
+    const client = createAirdropClient({ ...BASE_CONFIG, pollTimeoutMs: 100 });
+    const server = await getMockServer();
+
+    server.getAccount.mockResolvedValue({ id: "GOPER123", sequenceNumber: () => "0" });
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: {} },
+      transactionData: {},
+      minResourceFee: "100",
+    });
+    server.sendTransaction.mockResolvedValue({ status: "PENDING", hash: "batchtimeouthash" });
+    server.getTransaction.mockResolvedValue({ status: "NOT_FOUND" });
+
+    await expect(
+      client.batchClaim(BATCH_ENTRIES, "SOPER123")
+    ).rejects.toSatisfy((err: unknown) => {
+      expect(err).toBeInstanceOf(RpcError);
+      expect((err as RpcError).message).toMatch(/Transaction confirmation timeout after 100ms/);
+      expect((err as RpcError).message).toContain("batchtimeouthash");
+      return true;
+    });
+  }, 10_000);
+
+  it("handles an empty batch without error (empty entries array)", async () => {
+    const client = createAirdropClient({ ...BASE_CONFIG, pollTimeoutMs: 5000 });
+    const server = await getMockServer();
+
+    server.getAccount.mockResolvedValue({ id: "GOPER123", sequenceNumber: () => "0" });
+    server.simulateTransaction.mockResolvedValue({
+      result: { retval: {} },
+      transactionData: {},
+      minResourceFee: "100",
+    });
+    server.sendTransaction.mockResolvedValue({ status: "PENDING", hash: "emptybatchhash" });
+    server.getTransaction.mockResolvedValue({ status: "SUCCESS" });
+
+    const result = await client.batchClaim([], "SOPER123");
+    expect(result.count).toBe(0);
+    expect(result.success).toBe(true);
+  }, 10_000);
 });
 
 // ─── Issue #58: formatAmount utility ───────────────────────────────────────
