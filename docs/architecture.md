@@ -83,12 +83,19 @@ All storage uses `DataKey` variants defined in `contracts/airdrop/src/types.rs`.
 | `DataKey::TotalDeposited` | Instance | `i128` | Tokens deposited at initialisation |
 | `DataKey::Active` | Instance | `bool` | Whether claims are currently accepted |
 | `DataKey::Expiration` | Instance | `u64` | Unix timestamp after which reclaim is permitted |
+| `DataKey::ClaimedCount` | Instance | `u32` | Running count of successful claims |
+| `DataKey::TotalClaimed` | Instance | `i128` | Sum of all tokens transferred by successful claims |
+| `DataKey::ClaimedTtl` | Instance | `u32` | Configured TTL (ledgers) for per-claimant `Claimed` entries |
+| `DataKey::InstanceTtl` | Instance | `u32` | Configured TTL (ledgers) for instance storage |
 | `DataKey::Claimed(addr)` | Persistent | `bool` | Set to `true` once `addr` has claimed |
 
-Instance entries share one TTL (~2 years / 12 614 400 ledgers). Every
-read-query and the `restore()` helper re-extends this TTL so dormant airdrops
-are not archived. Per-claimant `Claimed` entries are extended individually at
-claim time with the same TTL.
+Instance entries share one TTL (default ~2 years / 12 614 400 ledgers,
+configurable via `instance_ttl` in `initialize`). Every read-query and the
+`restore()` helper re-extends this TTL so dormant airdrops are not archived.
+Per-claimant `Claimed` entries each have their own TTL (same default value,
+configurable via `claimed_ttl` in `initialize`) and are extended at claim time
+and refreshed by `is_claimed()` to prevent archival from silently re-enabling
+a double-claim.
 
 ---
 
