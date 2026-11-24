@@ -5,7 +5,9 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{storage::Instance as _, Address as _, BytesN as _, Events, Ledger, MockAuth, MockAuthInvoke},
+    testutils::{
+        storage::Instance as _, Address as _, BytesN as _, Events, Ledger, MockAuth, MockAuthInvoke,
+    },
     token::{Client as TokenClient, StellarAssetClient},
     Address, Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec,
 };
@@ -122,6 +124,78 @@ fn test_initialize_and_query() {
     assert_eq!(client.admin(), Some(admin.clone()));
     assert!(!client.is_claimed(&claimant));
     assert_eq!(client.expiration(), Some(DEFAULT_EXPIRATION));
+}
+
+#[test]
+fn test_contract_info_uninitialized_returns_none() {
+    let env = Env::default();
+    let contract_id = env.register(AirdropContract, ());
+    let client = AirdropContractClient::new(&env, &contract_id);
+
+    assert!(client.contract_info().is_none());
+}
+
+#[test]
+fn test_contract_info_initialized_matches_inputs() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let root = BytesN::from_array(&env, &[7; 32]);
+    let deposit = 1500;
+
+    mint(&env, &token, &admin, &admin, deposit);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &deposit,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    let info = client
+        .contract_info()
+        .expect("initialized contract snapshot");
+    assert_eq!(info.admin, admin);
+    assert_eq!(info.token, token);
+    assert_eq!(info.merkle_root, root);
+    assert_eq!(info.total_deposited, deposit);
+    assert!(info.active);
+    assert_eq!(info.expiration, DEFAULT_EXPIRATION);
+}
+
+#[test]
+fn test_contract_info_extends_ttl() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let root = BytesN::from_array(&env, &[7; 32]);
+    let deposit = 1500;
+
+    mint(&env, &token, &admin, &admin, deposit);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &deposit,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    let current_ttl = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
+    // Advancing the ledger reduces the remaining TTL without refreshing storage.
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + current_ttl - 1);
+    let ttl_before = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
+    assert_eq!(ttl_before, 1);
+
+    assert!(client.contract_info().is_some());
+
+    let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
+    assert!(
+        ttl_after > ttl_before,
+        "contract_info() must refresh the instance TTL"
+    );
 }
 
 #[test]
@@ -1823,8 +1897,7 @@ fn test_update_merkle_root_while_paused() {
 
     // Build a new root to rotate to.
     let new_claimant = Address::generate(&env);
-    let (new_root, _, _) =
-        build_two_leaf_tree(&env, &contract_id, &new_claimant, 800, &admin, 200);
+    let (new_root, _, _) = build_two_leaf_tree(&env, &contract_id, &new_claimant, 800, &admin, 200);
 
     // update_merkle_root must succeed while paused.
     client.update_merkle_root(&new_root, &1000);
@@ -2679,7 +2752,15 @@ fn test_total_claimed_starts_at_zero() {
 
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     assert_eq!(
         client.total_claimed(),
@@ -2708,7 +2789,15 @@ fn test_total_claimed_increments_per_claim() {
     let (root, proofs) = build_n_leaf_tree(&env, &contract_id, &claimants, &amounts);
 
     mint(&env, &token, &admin, &admin, total);
-    client.initialize(&admin, &token, &root, &total, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &total,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     // No claims yet.
     assert_eq!(client.total_claimed(), 0);
@@ -2740,7 +2829,15 @@ fn test_total_claimed_not_affected_by_failed_claim() {
         build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &other, 500);
 
     mint(&env, &token, &admin, &admin, 1500);
-    client.initialize(&admin, &token, &root, &1500, &DEFAULT_EXPIRATION, &None, &None);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1500,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
 
     assert_eq!(client.total_claimed(), 0, "initial total_claimed must be 0");
 
