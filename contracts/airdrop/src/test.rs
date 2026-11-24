@@ -1843,6 +1843,156 @@ fn test_update_merkle_root_while_paused() {
     );
 }
 
+#[test]
+fn test_update_merkle_root_replaces_root() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1000);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1000,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    let new_claimant = Address::generate(&env);
+    let (new_root, _, _) =
+        build_two_leaf_tree(&env, &contract_id, &new_claimant, 800, &admin, 200);
+    client.update_merkle_root(&new_root, &1000);
+
+    assert_eq!(client.merkle_root(), Some(new_root));
+}
+
+#[test]
+fn test_update_merkle_root_tops_up_balance() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let token_client = TokenClient::new(&env, &token);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1500);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1000,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+    let admin_balance_before = token_client.balance(&admin);
+    let contract_balance_before = token_client.balance(&contract_id);
+
+    let new_claimant = Address::generate(&env);
+    let (new_root, _, _) =
+        build_two_leaf_tree(&env, &contract_id, &new_claimant, 1200, &admin, 300);
+    client.update_merkle_root(&new_root, &1500);
+
+    assert_eq!(token_client.balance(&admin), admin_balance_before - 500);
+    assert_eq!(token_client.balance(&contract_id), contract_balance_before + 500);
+}
+
+#[test]
+fn test_update_merkle_root_zero_amount_fails() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1000);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1000,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    assert_eq!(
+        client.try_update_merkle_root(&root, &0),
+        Err(Ok(AirdropError::ZeroAmount))
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_update_merkle_root_non_admin_fails() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1000);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1000,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    env.set_auths(&[MockAuth {
+        address: &non_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "update_merkle_root",
+            args: (root.clone(), 1000_i128).into_val(&env),
+            sub_invokes: &[],
+        },
+    }
+    .into()]);
+
+    client.update_merkle_root(&root, &1000);
+}
+
+#[test]
+fn test_update_merkle_root_emits_event() {
+    let (env, admin, token, contract_id) = setup();
+    let client = AirdropContractClient::new(&env, &contract_id);
+    let claimant = Address::generate(&env);
+
+    let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
+    mint(&env, &token, &admin, &admin, 1000);
+    client.initialize(
+        &admin,
+        &token,
+        &root,
+        &1000,
+        &DEFAULT_EXPIRATION,
+        &None,
+        &None,
+    );
+
+    let new_claimant = Address::generate(&env);
+    let (new_root, _, _) =
+        build_two_leaf_tree(&env, &contract_id, &new_claimant, 800, &admin, 200);
+    client.update_merkle_root(&new_root, &1000);
+
+    assert_eq!(
+        contract_events(&env, &contract_id),
+        expected_events(
+            &env,
+            &contract_id,
+            &[(
+                (symbol_short!("root_upd"), admin),
+                (new_root, 1000_i128).into_val(&env)
+            )],
+        )
+    );
+}
+
 fn hex_to_array_32(hex: &str) -> [u8; 32] {
     assert_eq!(hex.len(), 64, "expected 64 hex chars (32 bytes)");
     let mut out = [0u8; 32];
