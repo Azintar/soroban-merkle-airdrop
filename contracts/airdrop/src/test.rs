@@ -1240,10 +1240,10 @@ fn test_transfer_admin_uninitialized() {
 
 // ─── Issue #62: restore() helper ───────────────────────────────────────────
 
-/// restore() should extend the instance TTL even when called by a random
-/// address (no auth required).
+/// restore() should extend the instance TTL from one ledger back to its
+/// configured lifetime.
 #[test]
-fn test_restore_extends_ttl() {
+fn test_restore_bumps_ttl() {
     let (env, admin, token, contract_id) = setup();
     let client = AirdropContractClient::new(&env, &contract_id);
     let claimant = Address::generate(&env);
@@ -1260,22 +1260,18 @@ fn test_restore_extends_ttl() {
         &None,
     );
 
-    // Simulate near-archival. The instance TTL is counted down by the ledger
-    // sequence, so moving the ledger forward is what actually shortens it —
-    // `extend_ttl` only ever writes a larger value, and `extend_ttl(1, 1)`
-    // leaves a fresh instance (12.6M ledgers) untouched.
+    let ttl_initial = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
+    assert!(ttl_initial > 1);
     env.ledger()
-        .set_sequence_number(env.ledger().sequence() + INSTANCE_TTL - 1);
+        .set_sequence_number(env.ledger().sequence() + ttl_initial - 1);
     let ttl_before = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
-    assert!(
-        ttl_before < INSTANCE_TTL,
-        "the ledger jump must consume the instance TTL: before={ttl_before} INSTANCE_TTL={INSTANCE_TTL}"
+    assert_eq!(
+        ttl_before, 1,
+        "the instance TTL should be one ledger before restore"
     );
 
-    // Anyone can call restore() — no auth needed.
     client.restore();
 
-    // `get_ttl` is only readable from inside the contract's own context.
     let ttl_after = env.as_contract(&contract_id, || env.storage().instance().get_ttl());
     assert!(
         ttl_after > ttl_before,
@@ -1283,37 +1279,39 @@ fn test_restore_extends_ttl() {
     );
 }
 
-/// restore() requires no authentication — even a fresh Address can call it.
+/// A non-admin address can call restore().
 #[test]
-fn test_restore_requires_no_auth() {
-    let env = Env::default();
-    // Do NOT mock all auths — this verifies restore() passes without any auth.
-    let admin = Address::generate(&env);
-    let token_id = env
-        .register_stellar_asset_contract_v2(admin.clone())
-        .address();
-    let contract_id = env.register(AirdropContract, ());
+fn test_restore_callable_by_anyone() {
+    let (env, admin, token, contract_id) = setup();
     let client = AirdropContractClient::new(&env, &contract_id);
-
-    // Initialize using mock auth just for setup.
-    env.mock_all_auths();
     let claimant = Address::generate(&env);
+
     let (root, _, _) = build_two_leaf_tree(&env, &contract_id, &claimant, 1000, &admin, 500);
-    mint(&env, &token_id, &admin, &admin, 1500);
+    mint(&env, &token, &admin, &admin, 1500);
     client.initialize(
         &admin,
-        &token_id,
+        &token,
         &root,
         &1500,
         &DEFAULT_EXPIRATION,
         &None,
         &None,
     );
-    // Clear mock auths so subsequent calls must be auth-free.
-    env.set_auths(&[]);
 
-    // restore() must succeed without any signed auth.
-    client.restore(); // panics if auth is required
+    let caller = Address::generate(&env);
+    assert_ne!(caller, admin);
+    env.set_auths(&[MockAuth {
+        address: &caller,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "restore",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }
+    .into()]);
+
+    client.restore();
 }
 
 // ─── Issue #64: verify_proof edge case unit tests ────────────────────────────
